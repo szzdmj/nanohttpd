@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>本地HTTP演示 - 资产站点</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <!-- 注意：id-shim.js 将由本地服务器在返回时强制注入到 webjs.js 之前 -->
+  <script type="text/javascript" src="webjs.js"></script>
+</head>
+<body>
+  <h3>本地 HTTP 站点（assets -> http://127.0.0.1:12721/）</h3>
+  <p>这个页面只是占位测试页。后续请替换为你的完整 index.html。</p>
+  <ul>
+    <li><a href="test/relative-link">相对链接测试（将以本地根为基准解析）</a></li>
+    <li><a href="https://szzdmj.github.io/index.html" target="_blank">外链 _blank 测试（将强制当前 WebView 打开）</a></li>
+  </ul>
+</body>
+</html>
