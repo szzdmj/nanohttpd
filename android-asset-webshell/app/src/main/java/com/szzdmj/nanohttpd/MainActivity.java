@@ -12,9 +12,6 @@ import android.webkit.WebViewClient;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
-import java.net.URI;
-import java.net.URL;
-
 public class MainActivity extends AppCompatActivity {
 
   private static final String BASE = "http://127.0.0.1:12721/";
@@ -25,7 +22,6 @@ public class MainActivity extends AppCompatActivity {
   @Override protected void onCreate(@Nullable Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
 
-    // 启动本地 HTTP 服务器（assets -> http://127.0.0.1:12721/）
     server = new LocalHttpServer(getApplicationContext(), 12721);
     try { server.start(); } catch (Exception ignored) {}
 
@@ -40,7 +36,6 @@ public class MainActivity extends AppCompatActivity {
     s.setJavaScriptCanOpenWindowsAutomatically(true);
     s.setMediaPlaybackRequiresUserGesture(false);
 
-    // 建议开启硬件加速（默认开启），4.4 也支持
     if (Build.VERSION.SDK_INT >= 19) {
       web.setLayerType(WebView.LAYER_TYPE_HARDWARE, null);
     }
@@ -61,7 +56,7 @@ public class MainActivity extends AppCompatActivity {
       @Override
       public void onPageFinished(WebView view, String url) {
         super.onPageFinished(view, url);
-        // 降级：把 window.open/target=_blank 统一在当前页打开，避免“回到主页”
+        // 降级兜底：把 window.open/_blank 统一在当前 WebView 打开
         String js =
           "(function(){try{" +
             "window.open=function(u){if(u){location.href=u;}};" +
@@ -74,23 +69,19 @@ public class MainActivity extends AppCompatActivity {
 
       private boolean handleUrl(WebView v, String url) {
         if (url == null || url.length() == 0) return true;
-        // 允许 http/https 本地与外网
         if (url.startsWith("http://") || url.startsWith("https://")) {
           v.loadUrl(url);
           return true;
         }
         if (url.startsWith("#") || url.startsWith("about:")) {
-          // 锚点留在当前页
           return true;
         }
-        // 相对路径 -> 以本地站点为基准进行解析，避免 file:// 回首页
+        // 相对路径 -> 以本地站点为基准解析
         try {
-          URL base = new URL(BASE);
-          URL abs = new URL(base, url);
-          v.loadUrl(abs.toString());
+          String abs = BASE + url.replaceFirst("^/+", "");
+          v.loadUrl(abs);
           return true;
         } catch (Exception e) {
-          // 兜底：直接拦截
           return true;
         }
       }
@@ -99,13 +90,8 @@ public class MainActivity extends AppCompatActivity {
     web.setWebChromeClient(new WebChromeClient() {
       @Override
       public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
-        // 统一在当前 WebView 打开（window.open/target=_blank）
-        try {
-          // 有些内核通过 WebViewTransport 传递新 URL，这里简单粗暴：读取当前最新的 URL 不可靠，仍依赖注入 JS 兜底
-          return false;
-        } catch (Exception ignored) {
-          return false;
-        }
+        // 统一在当前 WebView 打开（主要依赖 onPageFinished 注入脚本）
+        return false;
       }
     });
 
