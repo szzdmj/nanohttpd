@@ -1,18 +1,14 @@
-# android-asset-webshell（基于 NanoHTTPD 的本地 HTTP 方案）
+# android-asset-webshell（NanoHTTPD 本地 HTTP 方案）
 
-目的：在 Android 4.4.4 上稳定加载你的 H5 页面，避免 file:// 带来的“找不到节点/跳回主页/相对链接失效”等问题。
+- 将 `app/src/main/assets` 映射为 `http://127.0.0.1:12721/`，避免 `file://` 兼容问题。
+- 返回 `index.html` 时，会在 `<script src="webjs.js">` 之前强制注入 `id-shim.js`（4.4.4 早期 id→window 兼容补丁）。
+- 完全本地：不做任何外网回源；构建时 CI 强校验必须包含 `index.html`、`id-shim.js`、`webjs.js`、`sw.js`。
 
-## 运行原理
-- 启动 `LocalHttpServer` 将 `app/src/main/assets` 映射为 `http://127.0.0.1:12721/`。
-- `WebView` 加载 `http://127.0.0.1:12721/index.html`（非 file://）。
-- 服务器返回 `index.html` 时，强制在 `<script src="webjs.js">` 之前注入 `id-shim.js`（v3），确保 4.4.4 早期脚本也能通过全局变量名拿到 DOM 节点。
-- 点击 `target=_blank` 或 `window.open()` 的链接，统一在当前 WebView 打开（`onPageFinished` 的脚本注入）。
+## 使用
+1. 把你的完整 `index.html`、`webjs.js`、`sw.js` 放入 `app/src/main/assets/`。
+2. Android Studio 打开 `android-asset-webshell`，运行在 Android 4.4.4/10 上验证。
+3. CI 工作流位于 `.github/workflows/android.yml`，会在构建前检查上述 4 个文件是否存在。
 
-## 使用步骤
-1. 将你的完整 `index.html` 替换目录 `app/src/main/assets/index.html`（当前为占位页），其它依赖资源按相对路径放入 `assets`。
-2. 如需保持最新的 `webjs.js`/`sw.js`，默认会从 `https://szzdmj.github.io/` 回源拉取；也可将文件放入 `assets` 覆盖本地优先。
-3. 用 Android Studio 打开 `android-asset-webshell` 工程，连接设备（Android 4.4.4 及以上），运行 app。
-
-## 常见问题
-- 4.4.4 仍“找不到节点/转圈”：确认注入是否成功（`LocalHttpServer` 对 `index.html` 的 replace 生效），必要时在 `COMMON_IDS` 增加更早被访问的 id 名称。
-- 点击某些“组合链接”无效：默认相对链接会基于 `http://127.0.0.1:12721/` 解析；若想改为补全到外网前缀，可在 `MainActivity.handleUrl()` 中按规则重写再 `loadUrl()`。
+## 链接与 `_blank`
+- App 会在页面加载完成后注入降级脚本，将 `window.open/_blank` 统一在当前 WebView 打开，避免“跳回主页”。
+- 相对链接会基于 `http://127.0.0.1:12721/` 解析；如需改为补到某域名，可在 `MainActivity.handleUrl()` 调整。
