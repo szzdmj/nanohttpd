@@ -59,12 +59,12 @@ jobs:
           echo "Assets present:"
           ls -l "$A"
 
-      # 构建：使用 gradle/gradle-build-action，无需仓库内 gradlew
+      # 使用 Gradle 7.6.1（与 AGP 7.4.2 兼容）
       - name: Build Debug
         uses: gradle/gradle-build-action@v3
         with:
           build-root-directory: android-asset-webshell
-          gradle-version: 7.4.2
+          gradle-version: 7.6.1
           arguments: assembleDebug --stacktrace --info --no-daemon
 
       - name: Upload debug APK
@@ -77,7 +77,7 @@ jobs:
         uses: gradle/gradle-build-action@v3
         with:
           build-root-directory: android-asset-webshell
-          gradle-version: 7.4.2
+          gradle-version: 7.6.1
           arguments: assembleRelease --stacktrace --info --no-daemon
 
       - name: Upload release APK
