@@ -32,6 +32,28 @@ jobs:
           echo "== expect android-asset-webshell/ structure =="
           ls -la android-asset-webshell || { echo "ERROR: android-asset-webshell/ not found"; exit 1; }
 
+      - name: Configure Android SDK and local.properties
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANDROID_SDK_ROOT_DEFAULT="/usr/local/lib/android/sdk"
+          echo "Using ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT_DEFAULT}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT_DEFAULT}" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT_DEFAULT}" >> "$GITHUB_ENV"
+
+          # 写入工程级 local.properties（Gradle/AGP 读取 sdk.dir）
+          LP="android-asset-webshell/local.properties"
+          {
+            echo "sdk.dir=${ANDROID_SDK_ROOT_DEFAULT}"
+          } > "${LP}"
+          echo "==== local.properties ===="
+          cat "${LP}"
+
+          # 安装必要组件（最小集）
+          yes | "${ANDROID_SDK_ROOT_DEFAULT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "${ANDROID_SDK_ROOT_DEFAULT}/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "build-tools;33.0.2" "platforms;android-33"
+
       - name: Prepare assets — use local index.html/id-shim.js; download webjs.js & sw.js
         env:
           BASE_URL: ${{ github.event.inputs.base_url || 'https://szzdmj.github.io/' }}
