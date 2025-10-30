@@ -11,12 +11,9 @@ import org.nanohttpd.protocols.http.response.Status;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 
 class LocalHttpServer extends NanoHTTPD {
   private final AssetManager am;
-  private final String REMOTE_BASE = "https://szzdmj.github.io/";
 
   LocalHttpServer(Context ctx, int port) {
     super("127.0.0.1", port);
@@ -33,39 +30,32 @@ class LocalHttpServer extends NanoHTTPD {
         return Response.newChunkedResponse(Status.OK, "application/javascript", in);
       }
 
-      // 远程兜底：webjs.js/sw.js 如果 assets 没有，则从 REMOTE_BASE 拉取一次
-      if ("/webjs.js".equals(path) || "/sw.js".equals(path)) {
-        try {
-          InputStream remote = fetchRemote(REMOTE_BASE + path.substring(1));
-          if (remote != null) {
-            return Response.newChunkedResponse(Status.OK,
-              path.endsWith(".js") ? "application/javascript" : "text/plain", remote);
-          }
-        } catch (Exception ignored) {}
-      }
-
+      // 强制仅用本地 assets，绝不远程兜底
+      // 如果 webjs.js 或 sw.js 不存在于 assets，这里直接 404，避免任何外网访问
       if (path.endsWith(".html")) {
         InputStream inRaw = am.open(stripLeadingSlash(path));
         String html = readAll(inRaw, "UTF-8");
-        // 在 webjs.js 之前强制注入 id-shim（v3）
+        // 在 webjs.js 之前强制注入 id-shim（确保 4.4.4 先装配 ID 变量）
         String token = "<script type=\"text/javascript\" src=\"webjs.js\"></script>";
         if (html.contains(token)) {
           html = html.replace(token,
             "<script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n" + token);
         } else {
-          // 如果找不到 token，就尽量在 </head> 前注入
+          // 若找不到 token，则尽量在 </head> 前注入
           html = html.replace("</head>",
             "  <script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n</head>");
         }
         return Response.newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", html);
       }
 
-      // 其它静态资源：assets 直读
+      // 其它静态资源：assets 直读（不存在则抛出 -> 404）
       InputStream in = am.open(stripLeadingSlash(path));
       return Response.newChunkedResponse(Status.OK, guessMime(path), in);
 
     } catch (IOException e) {
-      return Response.newFixedLengthResponse(FixedStatusCode.NOT_FOUND, "text/plain", "404 Not Found: " + path);
+      // 严格返回 404，不做任何网络请求
+      String msg = "404 Not Found (local-only): " + path;
+      return Response.newFixedLengthResponse(FixedStatusCode.NOT_FOUND, "text/plain; charset=utf-8", msg);
     }
   }
 
@@ -95,19 +85,5 @@ class LocalHttpServer extends NanoHTTPD {
     int n;
     while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
     return bos.toString(enc);
-  }
-
-  private InputStream fetchRemote(String urlStr) throws IOException {
-    URL url = new URL(urlStr);
-    HttpURLConnection c = (HttpURLConnection) url.openConnection();
-    c.setConnectTimeout(8000);
-    c.setReadTimeout(12000);
-    c.setInstanceFollowRedirects(true);
-    int code = c.getResponseCode();
-    if (code >= 200 && code < 300) {
-      return c.getInputStream();
-    }
-    c.disconnect();
-    return null;
   }
 }
