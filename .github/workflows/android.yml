@@ -1,10 +1,15 @@
-name: Android CI - android-asset-webshell (local-only assets)
+name: Android CI - android-asset-webshell (local index.html + remote webjs/sw)
 
 on:
   push:
     branches: [ "master", "main" ]
   pull_request:
   workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Base URL to fetch webjs.js and sw.js'
+        required: false
+        default: 'https://szzdmj.github.io/'
 
 jobs:
   build:
@@ -27,21 +32,34 @@ jobs:
           echo "== expect android-asset-webshell/ structure =="
           ls -la android-asset-webshell || { echo "ERROR: android-asset-webshell/ not found"; exit 1; }
 
-      - name: Enforce local-only assets (no remote fetch)
-        working-directory: android-asset-webshell
+      - name: Prepare assets — use local index.html/id-shim.js; download webjs.js & sw.js
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url || 'https://szzdmj.github.io/' }}
         shell: bash
         run: |
           set -euo pipefail
-          A=app/src/main/assets
-          echo "Checking required local assets under: $A"
+          A="android-asset-webshell/app/src/main/assets"
+          mkdir -p "$A"
+
+          echo "Verifying local required files (no remote fallback at runtime):"
           test -f "$A/index.html" || { echo "ERROR: $A/index.html missing"; exit 1; }
           test -f "$A/id-shim.js" || { echo "ERROR: $A/id-shim.js missing"; exit 1; }
-          test -f "$A/webjs.js"   || { echo "ERROR: $A/webjs.js missing"; exit 1; }
-          test -f "$A/sw.js"      || { echo "ERROR: $A/sw.js missing"; exit 1; }
-          echo "OK: all required assets present."
+
+          echo "Using local index.html (first lines):"
           sed -n '1,40p' "$A/index.html" || true
 
-      # 使用 gradle/gradle-build-action 直接指定 Gradle 版本，无需仓库内有 gradlew
+          echo "Downloading web assets from BASE_URL=${BASE_URL}"
+          for f in webjs.js sw.js; do
+            url="${BASE_URL%/}/${f}"
+            dest="${A}/${f}"
+            echo "Fetching ${url} -> ${dest}"
+            curl -fsSL --retry 3 --connect-timeout 10 -o "${dest}" "${url}"
+          done
+
+          echo "Assets present:"
+          ls -l "$A"
+
+      # 构建：使用 gradle/gradle-build-action，无需仓库内 gradlew
       - name: Build Debug
         uses: gradle/gradle-build-action@v3
         with:
