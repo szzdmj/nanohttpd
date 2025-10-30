@@ -30,8 +30,7 @@ class LocalHttpServer extends NanoHTTPD {
         return Response.newChunkedResponse(Status.OK, "application/javascript", in);
       }
 
-      // 强制仅用本地 assets，绝不远程兜底
-      // 如果 webjs.js 或 sw.js 不存在于 assets，这里直接 404，避免任何外网访问
+      // 强制本地：不存在就 404
       if (path.endsWith(".html")) {
         InputStream inRaw = am.open(stripLeadingSlash(path));
         String html = readAll(inRaw, "UTF-8");
@@ -41,19 +40,16 @@ class LocalHttpServer extends NanoHTTPD {
           html = html.replace(token,
             "<script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n" + token);
         } else {
-          // 若找不到 token，则尽量在 </head> 前注入
           html = html.replace("</head>",
             "  <script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n</head>");
         }
         return Response.newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", html);
       }
 
-      // 其它静态资源：assets 直读（不存在则抛出 -> 404）
       InputStream in = am.open(stripLeadingSlash(path));
       return Response.newChunkedResponse(Status.OK, guessMime(path), in);
 
     } catch (IOException e) {
-      // 严格返回 404，不做任何网络请求
       String msg = "404 Not Found (local-only): " + path;
       return Response.newFixedLengthResponse(FixedStatusCode.NOT_FOUND, "text/plain; charset=utf-8", msg);
     }
