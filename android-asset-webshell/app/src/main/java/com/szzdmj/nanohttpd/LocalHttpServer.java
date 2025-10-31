@@ -3,10 +3,10 @@ package com.szzdmj.nanohttpd;
 import android.content.Context;
 import android.content.res.AssetManager;
 
-import org.nanohttpd.protocols.http.NanoHTTPD;
-import org.nanohttpd.protocols.http.response.Response;
-import org.nanohttpd.protocols.http.response.FixedStatusCode;
-import org.nanohttpd.protocols.http.response.Status;
+import org.nanohttpd.NanoHTTPD;
+import org.nanohttpd.Response;
+import org.nanohttpd.Status;
+import org.nanohttpd.IHTTPSession;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -51,7 +51,7 @@ class LocalHttpServer extends NanoHTTPD {
 
     } catch (IOException e) {
       String msg = "404 Not Found (local-only): " + path;
-      return Response.newFixedLengthResponse(FixedStatusCode.NOT_FOUND, "text/plain; charset=utf-8", msg);
+      return Response.newFixedLengthResponse(Status.NOT_FOUND, "text/plain; charset=utf-8", msg);
     }
   }
 
