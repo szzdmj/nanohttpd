@@ -1,2 +1,1 @@
-rootProject.name = "android-asset-webshell"
-include(":app")
+// Empty root build.gradle for android-asset-webshell project
