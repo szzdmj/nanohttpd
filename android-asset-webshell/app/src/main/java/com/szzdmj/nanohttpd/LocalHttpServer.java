@@ -3,10 +3,10 @@ package com.szzdmj.nanohttpd;
 import android.content.Context;
 import android.content.res.AssetManager;
 
-import org.nanohttpd.NanoHTTPD;
-import org.nanohttpd.Response;
-import org.nanohttpd.Status;
-import org.nanohttpd.IHTTPSession;
+import fi.iki.elonen.NanoHTTPD;
+import fi.iki.elonen.NanoHTTPD.Response;
+import fi.iki.elonen.NanoHTTPD.Status;
+import fi.iki.elonen.NanoHTTPD.IHTTPSession;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
