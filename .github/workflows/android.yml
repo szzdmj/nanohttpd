@@ -19,11 +19,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 11
+      # 使用 JDK 17，避免 sdkmanager (cmdline-tools/latest) 的 class version 61 报错
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
 
       - name: Sanity check project tree
         run: |
@@ -49,7 +50,7 @@ jobs:
           echo "==== local.properties ===="
           cat "${LP}"
 
-          # 安装必要组件（最小集）
+          # 接受许可证并安装必要组件（在 JDK 17 下执行）
           yes | "${ANDROID_SDK_ROOT_DEFAULT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           "${ANDROID_SDK_ROOT_DEFAULT}/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "build-tools;33.0.2" "platforms;android-33"
