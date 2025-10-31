@@ -79,7 +79,7 @@ class LocalHttpServer extends NanoHTTPD {
     ByteArrayOutputStream bos = new ByteArrayOutputStream();
     byte[] buf = new byte[8192];
     int n;
-    while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+    while ((n = in.read(buf)) > 0) bos.write(buf, 0, n;
     return bos.toString(enc);
   }
 }
