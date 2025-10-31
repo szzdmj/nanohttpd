@@ -26,6 +26,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Verify Java runtime (should be 17)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "JAVA_HOME=${JAVA_HOME}"
+          which java || true
+          java -version
+
       - name: Sanity check project tree
         run: |
           echo "== repo root =="
@@ -42,6 +50,12 @@ jobs:
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT_DEFAULT}" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=${ANDROID_SDK_ROOT_DEFAULT}" >> "$GITHUB_ENV"
 
+          # 强制使用 JDK 17（覆盖可能残留的 11）
+          export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          echo "[before sdkmanager] java -version:"
+          java -version
+
           # 写入工程级 local.properties（Gradle/AGP 读取 sdk.dir）
           LP="android-asset-webshell/local.properties"
           {
@@ -50,7 +64,7 @@ jobs:
           echo "==== local.properties ===="
           cat "${LP}"
 
-          # 接受许可证并安装必要组件（在 JDK 17 下执行）
+          # 接受许可证并安装必要组件（确保在 JDK 17 环境下执行）
           yes | "${ANDROID_SDK_ROOT_DEFAULT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           "${ANDROID_SDK_ROOT_DEFAULT}/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "build-tools;33.0.2" "platforms;android-33"
