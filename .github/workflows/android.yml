@@ -19,14 +19,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 使用 JDK 17，避免 sdkmanager (cmdline-tools/latest) 的 class version 61 报错
+      # 使用 JDK 17，避免 cmdline-tools/latest 的 class version 61 报错
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Verify Java runtime (should be 17)
+      - name: Verify Java runtime (expect JDK 17)
         shell: bash
         run: |
           set -euo pipefail
@@ -95,6 +95,23 @@ jobs:
 
           echo "Assets present:"
           ls -l "$A"
+
+      # 额外诊断：打印 Gradle 配置文件并跑一次“配置阶段”帮助命令，输出完整堆栈
+      - name: Print Gradle files
+        run: |
+          echo "==== android-asset-webshell/settings.gradle ===="
+          sed -n '1,200p' android-asset-webshell/settings.gradle || true
+          echo "==== android-asset-webshell/build.gradle ===="
+          sed -n '1,200p' android-asset-webshell/build.gradle || true
+          echo "==== android-asset-webshell/app/build.gradle ===="
+          sed -n '1,300p' android-asset-webshell/app/build.gradle || true
+
+      - name: Gradle config-only (help) with full stacktrace
+        uses: gradle/gradle-build-action@v3
+        with:
+          build-root-directory: android-asset-webshell
+          gradle-version: 7.6.1
+          arguments: help --stacktrace --info --no-daemon
 
       # 使用 Gradle 7.6.1（与 AGP 7.4.2 兼容）
       - name: Build Debug
