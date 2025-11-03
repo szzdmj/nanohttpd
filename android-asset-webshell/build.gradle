@@ -1,54 +1,18 @@
+// 根 build.gradle：仅提供 Android Gradle Plugin classpath 和仓库声明
 buildscript {
   repositories {
     google()
     mavenCentral()
   }
   dependencies {
-    // 与 Gradle 7.6.1、JDK 11 兼容
+    // 与 CI 使用的 Gradle 7.6.1、JDK 11 兼容
     classpath 'com.android.tools.build:gradle:7.4.2'
   }
 }
 
-apply plugin: 'com.android.application'
-
-repositories {
-  google()
-  mavenCentral()
-}
-
-android {
-  compileSdkVersion 34
-
-  defaultConfig {
-    applicationId "com.szzdmj.nanohttpd.webshell"
-    minSdkVersion 19
-    targetSdkVersion 34
-    versionCode 1
-    versionName "1.0"
-    vectorDrawables.useSupportLibrary = true
+allprojects {
+  repositories {
+    google()
+    mavenCentral()
   }
-
-  buildTypes {
-    release {
-      minifyEnabled false
-      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-    }
-    debug {
-      minifyEnabled false
-    }
-  }
-
-  compileOptions {
-    sourceCompatibility JavaVersion.VERSION_1_8
-    targetCompatibility JavaVersion.VERSION_1_8
-  }
-}
-
-dependencies {
-  implementation 'androidx.appcompat:appcompat:1.6.1'
-  implementation 'com.google.android.material:material:1.9.0'
-
-  // 原来这里是 `implementation project(':..')` —— 这是无效的路径，会导致评估期报错。
-  // 如果确实需要 nanohttpd，请使用远程依赖（示例）或在根 settings.gradle 正确 include 子模块：
-  // implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
