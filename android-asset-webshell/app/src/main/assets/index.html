@@ -9,7 +9,628 @@
 </head>
 <body>
   <h3>本地 HTTP 站点（assets -> http://127.0.0.1:12721/）</h3>
-  <p>占位页。把你的完整 index.html 替换到此处即可。</p>
+  <p><!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>WebView/浏览器 运行环境诊断（含变量与回调值显示 + webjs 外挂适配 4.4.4）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans CJK", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 8px; }
+    h3 { margin: 6px 0; }
+    #log { border: 1px solid #ccc; padding: 8px; height: 30vh; overflow: auto; background:#f9f9f9; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+    .INFO { color: #333; }
+    .WARN { color: #b76e00; }
+    .ERROR{ color: #b00020; }
+    .row { margin: 6px 0; }
+    input[type="text"] { width: 96%; padding: 6px; font-size: 14px; }
+    button { padding: 6px 10px; font-size: 14px; }
+    #demoArea { border:1px dashed #ddd; padding:8px; margin-top:8px; }
+    #top12 { margin-top:6px; padding:6px; background:#eef; border:1px solid #cde; }
+    #linkArea { padding:6px; border:1px dashed #ddd; margin-top:6px; }
+    .pill { display:inline-block; margin:2px 4px; padding:2px 6px; border-radius:10px; background:#eef; border:1px solid #cde; font-size:12px; }
+    #varDisplay, #cbDisplay { border:1px solid #ccc; padding:8px; margin-top:8px; background:#ffe; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
+    #loading { margin-top:8px; padding:6px; border:1px dashed #ccc; background:#fffff0; display:none; }
+    #qrcode { margin-top:8px; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+
+  <!-- 轻量日志器（兼容 4.4：不使用 ES6 语法） -->
+  <script>
+  (function(){
+    var start = Date.now();
+    function ts(){ return '[' + (Date.now()-start) + 'ms] '; }
+    function append(level, msg){
+      var pre = document.getElementById('log');
+      var line = ts() + level + ': ' + msg;
+      try {
+        var div = document.createElement('div');
+        div.className = level;
+        div.textContent = line;
+        pre.appendChild(div);
+        pre.scrollTop = pre.scrollHeight;
+      } catch(e) {}
+    }
+    window.L = {
+      info: function(m){ append('INFO', m); },
+      warn: function(m){ append('WARN', m); },
+      error:function(m){ append('ERROR',m); }
+    };
+  })();
+  </script>
+
+  <!-- 捕获脚本错误与资源加载失败（兼容 4.4） -->
+  <script>
+  window.addEventListener('error', function(e){
+    try{
+      if (e && e.target && e.target.tagName === 'SCRIPT') {
+        L.error('Script load failed: ' + (e.target.src || '(inline)'));
+      } else {
+        var where = (e.filename||'') + (e.lineno? (':'+e.lineno):'') + (e.colno? (':'+e.colno):'');
+        L.error('Unhandled error: ' + (e.message||e) + (where? (' @ '+where):''));
+      }
+    }catch(e2) {}
+  }, true);
+  </script>
+
+  <!-- 关键外挂（1/2）：模块导出捕获（AMD/CommonJS/UMD），在加载 webjs.js 之前注入 -->
+  <script>
+  (function(){
+    // globalThis 兼容
+    if (typeof window.globalThis === 'undefined') {
+      try {
+        Object.defineProperty(Object.prototype, '__gt__', { get: function(){ return this; }, configurable: true });
+        window.globalThis = __gt__;
+        delete Object.prototype.__gt__;
+      } catch(e) {
+        try { window.globalThis = (function(){ return this; })(); } catch(e2){}
+      }
+    }
+
+    // 捕获 webjs 的导出
+    window.__webjsCapture = { amdReturned: null };
+
+    // 备份原对象
+    var prevDefine = window.define;
+    var prevModule = window.module;
+    var prevExports = window.exports;
+
+    // 简易 AMD
+    window.define = function(deps, factory){
+      if (typeof deps === 'function'){ factory = deps; }
+      try {
+        window.__webjsCapture.amdReturned = (typeof factory === 'function') ? factory() : factory;
+      } catch(e){
+        L.error('AMD define 执行失败：' + e);
+      }
+    };
+    window.define.amd = true;
+
+    // 简易 CommonJS
+    window.module = { exports: {} };
+    window.exports = window.module.exports;
+
+    // 恢复函数
+    window.__restoreModuleShims = function(){
+      try { window.define  = prevDefine; }  catch(e){}
+      try { window.module  = prevModule; }  catch(e){}
+      try { window.exports = prevExports; } catch(e){}
+    };
+  })();
+  </script>
+
+  <!-- 关键外挂（2/2）：最小“转译+装载”器（把不兼容 4.4 的语法粗略转为 ES5 并 eval） -->
+  <script>
+  (function(){
+    function replaceAll(s, re, rep){ return s.replace(re, rep); }
+
+    // 极简转译：仅覆盖常见 let/const、箭头函数、export
+    function transpileToES5(code){
+      try {
+        // 1) 去除 BOM
+        if (code.charCodeAt(0) === 0xFEFF) code = code.slice(1);
+
+        // 2) 移除常见的模块关键字（export default / export function）
+        code = replaceAll(code, /\bexport\s+default\s+/g, 'window.__webjsDefaultExport = ');
+        code = replaceAll(code, /\bexport\s+function\s+([A-Za-z_$][\w$]*)\s*\(/g, 'function $1(');
+
+        // 3) let/const -> var（非常粗糙，但对大多数场景可用）
+        code = replaceAll(code, /\blet\s+/g, 'var ');
+        code = replaceAll(code, /\bconst\s+/g, 'var ');
+
+        // 4) 箭头函数（两类：() => { ... } 与 x => 表达式）
+        // 4.1 带块体
+        code = replaceAll(code, /(\([^\)]*\))\s*=>\s*\{/g, 'function $1 {');
+        code = replaceAll(code, /([A-Za-z_$][\w$]*)\s*=>\s*\{/g, 'function($1) {');
+        // 4.2 表达式体（保守：行尾或逗号/分号前的简单表达式）
+        code = replaceAll(code, /(\([^\)]*\))\s*=>\s*([^{}\n;]+)(?=[;\n,}])/g, 'function $1 { return $2 }');
+        code = replaceAll(code, /([A-Za-z_$][\w$]*)\s*=>\s*([^{}\n;]+)(?=[;\n,}])/g, 'function($1){ return $2 }');
+
+        return code;
+      } catch (e) {
+        L.error('转译失败：' + e);
+        return code;
+      }
+    }
+
+    function xhrLoadText(url, ok, fail){
+      try{
+        var x = new XMLHttpRequest();
+        if (x.overrideMimeType) x.overrideMimeType('text/plain; charset=utf-8');
+        x.onreadystatechange = function(){
+          if (x.readyState === 4){
+            if (x.status === 0 || (x.status >= 200 && x.status < 300)) ok(x.responseText);
+            else fail && fail('HTTP ' + x.status);
+          }
+        };
+        x.open('GET', url, true);
+        x.send(null);
+      }catch(e){ fail && fail('XHR 异常：' + e); }
+    }
+
+    window.__webjsCompatEval = function(url, done){
+      xhrLoadText(url, function(src){
+        var code = transpileToES5(String(src || ''));
+        try {
+          // 在全局作用域执行
+          (0, eval)(code + '\n//# sourceURL=' + url + '.compat.js');
+          L.info('webjs.js 兼容模式执行完成（已尝试 ES5 化）');
+          done && done(true);
+        } catch(e){
+          L.error('兼容模式 eval 失败：' + e);
+          done && done(false);
+        }
+      }, function(err){
+        L.error('兼容模式载入失败：' + err);
+        done && done(false);
+      });
+    };
+  })();
+  </script>
+</head>
+<body>
+  <h3>WebView/浏览器 运行环境诊断</h3>
+  <div id="log" aria-label="日志输出"></div>
+
+  <div class="row">
+    <button onclick="runEnvChecks()">运行环境检查</button>
+    <button onclick="runPreShimChecks()">预检查（shim 前）</button>
+    <button onclick="installShim()">安装 ID 暴露 shim</button>
+    <button onclick="runPostShimChecks()">复查（shim 后）</button>
+    <button onclick="tryLoadWebjs()">尝试加载 webjs.js</button>
+  </div>
+
+  <div class="row">
+    <b>loadWeb 调用工具：</b><br>
+    <input id="siteUrl" type="text" value="" placeholder="可选：传给 loadWeb(site) 的 site 参数（留空则不传）">
+    <button onclick="callLoadWeb()">调用 loadWeb()</button>
+  </div>
+
+  <div class="row">
+    <label>自定义要检测的 ID（逗号分隔）：</label><br>
+    <input id="ids" type="text" value="top12,divDDMXS,d0,inMainleft1,toptu">
+    <button onclick="checkIds()">检测这些 ID</button>
+  </div>
+
+  <div class="row">
+    <b>变量工具：</b><br>
+    <input id="varName" type="text" value="lateNode" placeholder="输入变量名，例如 lateNode">
+    <button onclick="showVar()">显示变量值</button>
+    <button onclick="makeLink()">生成链接（形如 变量/0）</button>
+    <div id="linkArea"></div>
+  </div>
+
+  <div id="varDisplay">
+    <b>变量值显示区域：</b>
+    <pre id="varContent">暂无变量值显示</pre>
+  </div>
+
+  <div id="cbDisplay">
+    <b>回调值显示区域（FoundMedia/FoundSite）：</b>
+    <pre id="cbContent">暂无回调</pre>
+  </div>
+
+  <div id="demoArea">
+    <b>页面内置示例节点（用于最小化复现）：</b>
+    <div id="top12">示例：id="top12" 的节点（调试页自带）</div>
+    <div id="divDDMXS" style="display:none">示例：id="divDDMXS"</div>
+    <div id="d0" style="display:none">示例：id="d0"</div>
+  </div>
+
+  <div id="loading" aria-live="polite"></div>
+  <div id="qrcode"></div>
+
+  <script>
+    // 小工具：生成节点摘要字符串
+    function summarizeNode(n){
+      if (!n) return '(null/undefined)';
+      try{
+        var txt = (n.textContent||'').replace(/\s+/g,' ').slice(0,60);
+        return [
+          'id="'+(n.id||'')+'"',
+          'tag='+ (n.tagName||''),
+          (n.className? ('class="'+n.className+'"') : ''),
+          'text="'+txt+'"'
+        ].filter(Boolean).join(', ');
+      }catch(e){ return '[uninspectable node: '+e+']'; }
+    }
+
+    function runEnvChecks(){
+      L.info('Feature serviceWorker: ' + (typeof navigator!=='undefined' && !!navigator.serviceWorker));
+      L.info('Feature fetch: ' + ('fetch' in window));
+      L.info('Feature Promise: ' + ('Promise' in window));
+      L.info('Feature MutationObserver: ' + ('MutationObserver' in window));
+      L.info('Feature CSS.supports: ' + ('CSS' in window && 'supports' in CSS));
+      L.info('UserAgent: ' + navigator.userAgent);
+      L.info('Location: '  + location.href);
+      L.info('Protocol: '  + location.protocol + '（file:// 在 4.4 下不支持 SW）');
+    }
+
+    function runPreShimChecks(){
+      try{ top12.style.border = '1px solid #0c0'; L.info('Pre-shim: top12 变量可用'); }
+      catch(e){ L.warn('Pre-shim: top12 变量不可用（undefined） => ' + e); }
+      try{ d0.style.display = 'block'; L.info('Pre-shim: d0 变量可用'); }
+      catch(e){ L.warn('Pre-shim: d0 变量不可用（undefined） => ' + e); }
+    }
+
+    // 安装把所有 id 显式挂到 window 的 shim（方案 A 的核心）
+    var __shimInstalled = false;
+    function installShim(){
+      if (__shimInstalled){ L.info('shim 已安装'); return; }
+      (function exposeIdsToWindow(){
+        function expose(el){
+          var id = el && el.id;
+          if (id && !(id in window)) window[id] = el;
+        }
+        try {
+          var els = document.querySelectorAll('[id]');
+          for (var i=0;i<els.length;i++) expose(els[i]);
+          try{
+            new MutationObserver(function(muts){
+              for (var k=0;k<muts.length;k++){
+                var nodes = muts[k].addedNodes || [];
+                for (var j=0;j<nodes.length;j++){
+                  var n = nodes[j];
+                  if (n.nodeType === 1){
+                    expose(n);
+                    if (n.querySelectorAll){
+                      var all = n.querySelectorAll('[id]');
+                      for (var i2=0;i2<all.length;i2++) expose(all[i2]);
+                    }
+                  }
+                }
+              }
+            }).observe(document.documentElement, {subtree:true, childList:true});
+          }catch(e2) {}
+          __shimInstalled = true;
+          L.info('shim 安装完成。window.top12 类型：' + (typeof window.top12));
+        } catch(e){
+          L.error('安装 shim 失败：' + e);
+        }
+      })();
+    }
+
+    function runPostShimChecks(){
+      try{ top12.style.backgroundColor = '#efe'; L.info('Post-shim: top12 变量可用'); }
+      catch(e){ L.error('Post-shim: top12 变量仍不可用 => ' + e); }
+      try{ d0.style.display = 'block'; L.info('Post-shim: d0 变量可用'); }
+      catch(e){ L.error('Post-shim: d0 变量仍不可用 => ' + e); }
+    }
+
+    // 批量检查一组 id：比较 window[id] 与 document.getElementById(id)
+    function checkIds(){
+      var raw = document.getElementById('ids').value || '';
+      var arr = raw.split(/\s*,\s*/);
+      for (var i=0;i<arr.length;i++){
+        var id = arr[i];
+        if (!id) continue;
+        var byVar = window[id];
+        var byGet = document.getElementById(id);
+        L.info('ID "'+id+'": window.'+id+' = ' + (byVar ? 'OK' : 'undefined')
+               + ', getElementById = ' + (byGet ? 'OK' : 'null'));
+      }
+      var late = document.createElement('div'); late.id = 'lateNode'; late.textContent = '动态新增: lateNode';
+      document.body.appendChild(late);
+      L.info('已新增 id="lateNode"。window.lateNode 类型：' + (typeof window.lateNode));
+      L.info('lateNode 值: ' + summarizeNode(window.lateNode));
+      addComposedLink('lateNode', 0);
+    }
+
+    // 变量工具：显示变量值（日志 + 屏幕显示）
+    function showVar(){
+      var name = (document.getElementById('varName').value || '').trim();
+      if (!name) { L.warn('变量工具：请输入变量名'); return; }
+      var v = window[name];
+      if (!v) { L.warn('变量工具：window.'+name+' 不存在/未定义'); return; }
+      L.info('window.'+name+' 类型：' + (typeof v));
+      var displayText = 'window.' + name + ' 类型：' + (typeof v) + '\n';
+      if (typeof v === 'object') {
+        L.info(name+' 值: ' + summarizeNode(v));
+        displayText += name + ' 值: ' + summarizeNode(v) + '\n';
+      } else {
+        try {
+          L.info(name+' 值（非节点）：' + String(v));
+          displayText += name + ' 值（非节点）：' + String(v) + '\n';
+        }
+        catch(e){
+          L.info(name+' 值（不可转字符串）');
+          displayText += name + ' 值（不可转字符串）\n';
+        }
+      }
+      document.getElementById('varContent').textContent = displayText;
+    }
+
+    function makeLink(){
+      var name = (document.getElementById('varName').value || '').trim();
+      if (!name) { L.warn('变量工具：请输入变量名'); return; }
+      addComposedLink(name, 0);
+    }
+
+    function addComposedLink(name, idx){
+      var area = document.getElementById('linkArea');
+      var a = document.createElement('a');
+      var linkText = name + '/' + idx;
+      a.textContent = linkText;
+      a.href = '#' + linkText;
+      a.className = 'pill';
+      a.onclick = function(ev){
+        ev.preventDefault();
+        L.info('已点击链接：' + linkText + '（哈希跳转，未离开当前页）');
+        location.hash = linkText;
+      };
+      area.appendChild(a);
+      L.info('生成链接：' + linkText);
+    }
+
+    // 安全 JSON 序列化（避免循环引用）
+    function pretty(obj){
+      var cache = [];
+      try{
+        var s = JSON.stringify(obj, function(key, value){
+          if (typeof value === 'object' && value !== null) {
+            if (cache.indexOf(value) !== -1) return '[Circular]';
+            cache.push(value);
+          }
+          return value;
+        }, 2);
+        cache = null;
+        return s;
+      }catch(e){
+        try{ return String(obj); }catch(e2){ return '[Unserializable]'; }
+      }
+    }
+    function showCallback(name, data){
+      var el = document.getElementById('cbContent');
+      el.textContent = name + ' 参数：\n' + pretty(data);
+    }
+
+    // ===== webjs 外挂适配核心 =====
+    function resolveLoadWebFromExports(){
+      try {
+        if (typeof window.loadWeb === 'function') return true;
+
+        var mexp = (window.module && window.module.exports) ? window.module.exports : null;
+        if (mexp) {
+          if (typeof mexp.loadWeb === 'function'){ window.loadWeb = mexp.loadWeb; return true; }
+          if (mexp && mexp.default && typeof mexp.default.loadWeb === 'function'){ window.loadWeb = mexp.default.loadWeb; return true; }
+          if (typeof mexp === 'function'){ window.loadWeb = mexp; return true; }
+        }
+
+        var amd = window.__webjsCapture && window.__webjsCapture.amdReturned;
+        if (amd) {
+          if (typeof amd.loadWeb === 'function'){ window.loadWeb = amd.loadWeb; return true; }
+          if (amd.default && typeof amd.default.loadWeb === 'function'){ window.loadWeb = amd.default.loadWeb; return true; }
+          if (typeof amd === 'function'){ window.loadWeb = amd; return true; }
+        }
+
+        // 扫描 UMD 全局
+        var k, v, lw=null;
+        for (k in window) {
+          if (!window.hasOwnProperty(k)) continue;
+          if (k === 'loadWeb' || k === 'module' || k === 'exports' || k === '__webjsCapture' || k === 'define') continue;
+          try { v = window[k]; } catch(e){ continue; }
+          if (v && typeof v === 'object') {
+            if (typeof v.loadWeb === 'function'){ lw = v.loadWeb; break; }
+            if (v.default && typeof v.default.loadWeb === 'function'){ lw = v.default.loadWeb; break; }
+          }
+        }
+        if (lw){ window.loadWeb = lw; return true; }
+
+        // 默认导出含函数
+        if (window.__webjsDefaultExport) {
+          var d = window.__webjsDefaultExport;
+          if (typeof d.loadWeb === 'function'){ window.loadWeb = d.loadWeb; return true; }
+          if (typeof d === 'function'){ window.loadWeb = d; return true; }
+        }
+        return false;
+      } catch(e){
+        L.error('解析 loadWeb 失败：' + e);
+        return false;
+      }
+    }
+
+    var __webjsLoading = false, __webjsLoaded = false, __webjsWaiters = [], __compatTried = false;
+
+    function ensureWebjsLoaded(cb){
+      if (__webjsLoaded) { if (cb) try{ cb(); }catch(e){}; return; }
+      __webjsWaiters.push(cb);
+      if (__webjsLoading) return;
+      __webjsLoading = true;
+
+      var s = document.createElement('script');
+      s.src = 'webjs.js';
+      s.onload = function(){
+        L.info('webjs.js 加载成功（原始模式）');
+
+        // 恢复 define/module/exports，避免影响其它脚本
+        if (typeof window.__restoreModuleShims === 'function') window.__restoreModuleShims();
+
+        var ok = resolveLoadWebFromExports();
+        L.info('window.loadWeb 类型：' + (typeof window.loadWeb) + (ok ? '（原始模式）' : '（未发现）'));
+
+        // 如果未能发现，尝试兼容转译模式（不改动 webjs.js 源文件）
+        if (!ok && !__compatTried) {
+          __compatTried = true;
+          L.warn('尝试以“兼容转译模式”加载 webjs.js（ES5 化）...');
+          window.__webjsCompatEval('webjs.js', function(success){
+            ok = resolveLoadWebFromExports();
+            L.info('兼容模式后 window.loadWeb 类型：' + (typeof window.loadWeb) + (ok ? '（已解析）' : '（仍未解析）'));
+            __webjsLoaded = true;
+            var list = __webjsWaiters.slice(); __webjsWaiters.length = 0;
+            for (var i=0;i<list.length;i++) { try { list[i] && list[i](); } catch(e){ L.error('webjs 回调异常：'+e); } }
+          });
+          return;
+        }
+
+        __webjsLoaded = true;
+        var list = __webjsWaiters.slice(); __webjsWaiters.length = 0;
+        for (var i=0;i<list.length;i++) { try { list[i] && list[i](); } catch(e){ L.error('webjs 回调异常：'+e); } }
+      };
+      s.onerror = function(){
+        L.error('webjs.js 加载失败（原始模式）。');
+        if (typeof window.__restoreModuleShims === 'function') window.__restoreModuleShims();
+
+        // 直接进入兼容转译模式
+        if (!__compatTried) {
+          __compatTried = true;
+          L.warn('回退到“兼容转译模式”加载 webjs.js...');
+          window.__webjsCompatEval('webjs.js', function(success){
+            var ok = resolveLoadWebFromExports();
+            L.info('兼容模式后 window.loadWeb 类型：' + (typeof window.loadWeb) + (ok ? '（已解析）' : '（仍未解析）'));
+            __webjsLoaded = true;
+            var list = __webjsWaiters.slice(); __webjsWaiters.length = 0;
+            for (var i=0;i<list.length;i++) { try { list[i] && list[i](); } catch(e){} }
+          });
+        } else {
+          __webjsLoaded = true;
+          var list2 = __webjsWaiters.slice(); __webjsWaiters.length = 0;
+          for (var j=0;j<list2.length;j++) { try { list2[j] && list2[j](); } catch(e){} }
+        }
+      };
+      document.head.appendChild(s);
+    }
+
+    function tryLoadWebjs(){ ensureWebjsLoaded(function(){ L.info('tryLoadWebjs: 已加载流程完成'); }); }
+
+    function callLoadWeb(){
+      var site = (document.getElementById('siteUrl').value || '').trim();
+      ensureWebjsLoaded(function(){
+        if (typeof window.loadWeb !== 'function') {
+          L.warn('loadWeb 未定义，无法调用（已尝试外挂解析与兼容转译）。');
+          return;
+        }
+        try {
+          if (site) {
+            L.info('调用 loadWeb(site)；site = ' + site);
+            window.loadWeb(site);
+          } else {
+            L.info('调用 loadWeb()（无参数）');
+            window.loadWeb();
+          }
+        } catch(e){
+          L.error('调用 loadWeb 抛出异常：' + e);
+        }
+      });
+    }
+
+    // 首屏：自动跑一次环境检查 + 预检查
+    runEnvChecks();
+    runPreShimChecks();
+  </script>
+
+  <!-- 业务相关：回调定义（值将显示在屏幕 cbDisplay 面板；兼容 4.4） -->
+  <img src="" class="hidden" id="c" rel="" nov="1" pwa="0">
+  <script type="text/javascript">
+    // 显示本平台二维码和网址（若未引入 QRCode 库则忽略）
+    try{
+      if (window.QRCode && document.getElementById("qrcode")) {
+        new QRCode(document.getElementById("qrcode"), {
+          text: location.href,
+          width: 140,
+          height: 140,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.L
+        });
+      }
+    }catch(e){}
+
+    // 如需 jQuery，这里依赖 webjs.js 内置版本
+    function setText(id, txt){ var el=document.getElementById(id); if(el){ el.textContent=txt; el.style.display=''; } }
+    function hideEl(id){ var el=document.getElementById(id); if(el){ el.style.display='none'; } }
+
+    // 显示 FoundMedia/FoundSite 的入参（值见“回调值显示区域”）
+    function FoundMedia(media){
+      L.info('FoundMedia 被调用');
+      showCallback('FoundMedia', media);
+    }
+
+    function FoundSite(site){
+      window.szsite = site; // site 形如 http(s)://域名（无尾斜杠）
+      L.info('FoundSite 被调用：' + site);
+      showCallback('FoundSite', site);
+    }
+
+    function NotFoundSite(){
+      if (window.$) {
+        $('#loading').text("未找到节点");
+        setTimeout(function(){ $('#loading').hide(); }, 3000);
+      } else {
+        setText('loading', '未找到节点');
+        setTimeout(function(){ hideEl('loading'); }, 3000);
+      }
+    }
+
+    function ShowLoading(show){
+      if (show && !window.szsite) {
+        if (window.$) $('#loading').text("正在下载播放列表，请稍候…");
+        else setText('loading', '正在下载播放列表，请稍候…');
+      } else if (!show) {
+        if (window.$) $('#loading').hide();
+        else hideEl('loading');
+      }
+    }
+
+    // 获取到的新闻（需要 jQuery；若未加载则跳过）
+    function BeforeShowContent(html){
+      if (!window.$) { L.warn('jQuery 未加载，BeforeShowContent 已跳过'); return; }
+      var items = $(html.replace(/\n/g,'')), blockCount=0, news='', marquee='';
+      items.each(function(i,item){
+        var title = $(item).find('h4').find('span').text(),
+            anchors = $('li', item);
+        if(!title || !anchors || anchors.length<4) return;
+        var half = Math.ceil(anchors.length / 2), anchors1 = '', anchors2 = '';
+        anchors.each(function(j,anchor){
+          if(j==0){ marquee+=anchor.innerHTML.replace(/<a\s/g, '<a style="margin-left:40px;" '); }
+          var s = '<p>'+anchor.innerHTML+'</p>';
+          if(j<half) anchors1+=s; else anchors2+=s;
+        });
+        news += '<h3' + (i===0 ? '' : ' style="margin-top:30px;"') + '>'+title+'</h3>' +
+                '<div id="inMainleft' + (++blockCount) + '" class="newstd">' + anchors1 + '</div>' +
+                '<div id="inMainleft' + (++blockCount) + '" class="newstd">' + anchors2 + '</div>' +
+                '<div style="clear: both;"></div>';
+      });
+      var mc = document.getElementById('MainleftContent');
+      if (mc) mc.innerHTML = news;
+      if (typeof checkScreenWidth === 'function') checkScreenWidth(blockCount);
+      if (typeof start_marquee === 'function') start_marquee(marquee);
+    }
+
+    // 自动加载 webjs 并尝试调用 loadWeb（若未提供该方法，仅记录日志）
+    (function(){
+      tryLoadWebjs();
+      ensureWebjsLoaded(function(){
+        if (typeof window.loadWeb === 'function') {
+          try { window.loadWeb(); }
+          catch(e){ L.error('自动调用 loadWeb 失败：' + e); }
+        } else {
+          L.warn('自动调用：loadWeb 未定义（已尝试外挂解析与兼容转译）。');
+        }
+      });
+    })();
+  </script>
+</body>
+</html></p>
   <ul>
     <li><a href="test/relative-link">相对链接测试</a></li>
     <li><a href="https://szzdmj.github.io/index.html" target="_blank">外链 _blank 测试</a></li>
