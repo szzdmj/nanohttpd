@@ -12,6 +12,9 @@ import android.webkit.WebViewClient;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
+// 注意：R 属于 app 的 namespace（build.gradle 配置为 com.szzdmj.nanohttpd.webshell）
+import com.szzdmj.nanohttpd.webshell.R;
+
 public class MainActivity extends AppCompatActivity {
 
   private static final String BASE = "http://127.0.0.1:12721/";
