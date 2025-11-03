@@ -5,7 +5,6 @@ import android.content.res.AssetManager;
 
 import fi.iki.elonen.NanoHTTPD;
 import fi.iki.elonen.NanoHTTPD.Response;
-import fi.iki.elonen.NanoHTTPD.Status;
 import fi.iki.elonen.NanoHTTPD.IHTTPSession;
 
 import java.io.ByteArrayOutputStream;
@@ -27,7 +26,7 @@ class LocalHttpServer extends NanoHTTPD {
     try {
       if ("/__shim__/id-shim.js".equals(path)) {
         InputStream in = am.open("id-shim.js");
-        return Response.newChunkedResponse(Status.OK, "application/javascript", in);
+        return Response.newChunkedResponse(Response.Status.OK, "application/javascript", in);
       }
 
       // 强制本地：不存在就 404
@@ -43,15 +42,15 @@ class LocalHttpServer extends NanoHTTPD {
           html = html.replace("</head>",
             "  <script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n</head>");
         }
-        return Response.newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", html);
+        return Response.newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html);
       }
 
       InputStream in = am.open(stripLeadingSlash(path));
-      return Response.newChunkedResponse(Status.OK, guessMime(path), in);
+      return Response.newChunkedResponse(Response.Status.OK, guessMime(path), in);
 
     } catch (IOException e) {
       String msg = "404 Not Found (local-only): " + path;
-      return Response.newFixedLengthResponse(Status.NOT_FOUND, "text/plain; charset=utf-8", msg);
+      return Response.newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain; charset=utf-8", msg);
     }
   }
 
