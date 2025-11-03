@@ -19,6 +19,9 @@ import androidx.appcompat.app.AppCompatActivity;
 // 注意：R 属于 app 的 namespace（build.gradle 配置为 com.szzdmj.nanohttpd.webshell）
 import com.szzdmj.nanohttpd.webshell.R;
 
+// 修复编译错误需要的 import
+import fi.iki.elonen.NanoHTTPD;
+
 import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity {
@@ -56,12 +59,12 @@ public class MainActivity extends AppCompatActivity {
     try {
       server = new LocalHttpServer(getApplicationContext(), 12721);
       try {
-        // 2.3.1 提供 start() 与 start(timeout,daemon)，做一次健壮调用
         server.start();
         Log.i(TAG, "LocalHttpServer.start() ok @ http://127.0.0.1:12721/");
       } catch (Throwable t1) {
         Log.w(TAG, "server.start() failed, retry with timeout/daemon", t1);
         try {
+          // 关键：这里需要 NanoHTTPD 常量，已添加 import
           server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
           Log.i(TAG, "LocalHttpServer.start(timeout,daemon) ok");
         } catch (Throwable t2) {
