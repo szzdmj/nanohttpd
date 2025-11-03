@@ -2,6 +2,7 @@ package com.szzdmj.nanohttpd;
 
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.util.Log;
 
 import fi.iki.elonen.NanoHTTPD;
 import fi.iki.elonen.NanoHTTPD.Response;
@@ -12,34 +13,37 @@ import java.io.IOException;
 import java.io.InputStream;
 
 class LocalHttpServer extends NanoHTTPD {
+  private static final String TAG = "WebShell/LocalHttpServer";
   private final AssetManager am;
 
   LocalHttpServer(Context ctx, int port) {
     super("127.0.0.1", port);
     this.am = ctx.getAssets();
+    Log.i(TAG, "constructed, port=" + port);
   }
 
   @Override
   public Response serve(IHTTPSession session) {
     String path = session.getUri(); // 形如 /index.html
+    Log.i(TAG, "serve() uri=" + path + ", method=" + session.getMethod());
     if ("/".equals(path)) path = "/index.html";
     try {
       if ("/__shim__/id-shim.js".equals(path)) {
+        Log.i(TAG, "hit id-shim.js");
         InputStream in = am.open("id-shim.js");
-        // 注意：在 nanohttpd 2.3.1 中，工厂方法在 NanoHTTPD 上，而不是 Response 上
         return NanoHTTPD.newChunkedResponse(Response.Status.OK, "application/javascript", in);
       }
 
-      // 强制本地：不存在就 404
       if (path.endsWith(".html")) {
         InputStream inRaw = am.open(stripLeadingSlash(path));
         String html = readAll(inRaw, "UTF-8");
-        // 在 webjs.js 之前强制注入 id-shim（确保 4.4.4 先装配 ID 变量）
         String token = "<script type=\"text/javascript\" src=\"webjs.js\"></script>";
         if (html.contains(token)) {
+          Log.i(TAG, "inject id-shim before webjs.js");
           html = html.replace(token,
             "<script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n" + token);
         } else {
+          Log.i(TAG, "inject id-shim near </head>");
           html = html.replace("</head>",
             "  <script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n</head>");
         }
@@ -47,11 +51,18 @@ class LocalHttpServer extends NanoHTTPD {
       }
 
       InputStream in = am.open(stripLeadingSlash(path));
-      return NanoHTTPD.newChunkedResponse(Response.Status.OK, guessMime(path), in);
+      String mime = guessMime(path);
+      Log.i(TAG, "static file: " + path + ", mime=" + mime);
+      return NanoHTTPD.newChunkedResponse(Response.Status.OK, mime, in);
 
     } catch (IOException e) {
       String msg = "404 Not Found (local-only): " + path;
+      Log.w(TAG, msg, e);
       return NanoHTTPD.newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain; charset=utf-8", msg);
+    } catch (Throwable t) {
+      Log.e(TAG, "serve() fatal for path=" + path, t);
+      String msg = "500 Internal Server Error: " + t;
+      return NanoHTTPD.newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain; charset=utf-8", msg);
     }
   }
 
