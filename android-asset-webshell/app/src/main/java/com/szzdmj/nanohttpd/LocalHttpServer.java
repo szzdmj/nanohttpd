@@ -26,7 +26,8 @@ class LocalHttpServer extends NanoHTTPD {
     try {
       if ("/__shim__/id-shim.js".equals(path)) {
         InputStream in = am.open("id-shim.js");
-        return Response.newChunkedResponse(Response.Status.OK, "application/javascript", in);
+        // 注意：在 nanohttpd 2.3.1 中，工厂方法在 NanoHTTPD 上，而不是 Response 上
+        return NanoHTTPD.newChunkedResponse(Response.Status.OK, "application/javascript", in);
       }
 
       // 强制本地：不存在就 404
@@ -42,15 +43,15 @@ class LocalHttpServer extends NanoHTTPD {
           html = html.replace("</head>",
             "  <script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n</head>");
         }
-        return Response.newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html);
+        return NanoHTTPD.newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html);
       }
 
       InputStream in = am.open(stripLeadingSlash(path));
-      return Response.newChunkedResponse(Response.Status.OK, guessMime(path), in);
+      return NanoHTTPD.newChunkedResponse(Response.Status.OK, guessMime(path), in);
 
     } catch (IOException e) {
       String msg = "404 Not Found (local-only): " + path;
-      return Response.newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain; charset=utf-8", msg);
+      return NanoHTTPD.newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain; charset=utf-8", msg);
     }
   }
 
