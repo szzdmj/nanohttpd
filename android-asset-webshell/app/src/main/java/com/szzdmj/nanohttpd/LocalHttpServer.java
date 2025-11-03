@@ -1,108 +1,91 @@
 package com.szzdmj.nanohttpd;
 
-import android.annotation.SuppressLint;
-import android.os.Build;
-import android.os.Bundle;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
+import android.content.Context;
+import android.content.res.AssetManager;
 
-import androidx.annotation.Nullable;
-import androidx.appcompat.app.AppCompatActivity;
+import fi.iki.elonen.NanoHTTPD;
+import fi.iki.elonen.NanoHTTPD.Response;
+import fi.iki.elonen.NanoHTTPD.Status;
+import fi.iki.elonen.NanoHTTPD.IHTTPSession;
 
-// Import the R class from the namespace declared in build.gradle (com.szzdmj.nanohttpd.webshell)
-import com.szzdmj.nanohttpd.webshell.R;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 
-public class MainActivity extends AppCompatActivity {
+class LocalHttpServer extends NanoHTTPD {
+  private final AssetManager am;
 
-  private static final String BASE = "http://127.0.0.1:12721/";
-  private WebView web;
-  private LocalHttpServer server;
-
-  @SuppressLint("SetJavaScriptEnabled")
-  @Override protected void onCreate(@Nullable Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-
-    server = new LocalHttpServer(getApplicationContext(), 12721);
-    try { server.start(); } catch (Exception ignored) {}
-
-    setContentView(R.layout.activity_main);
-    web = findViewById(R.id.web);
-
-    WebSettings s = web.getSettings();
-    s.setJavaScriptEnabled(true);
-    s.setDomStorageEnabled(true);
-    s.setDatabaseEnabled(true);
-    s.setSupportMultipleWindows(true);
-    s.setJavaScriptCanOpenWindowsAutomatically(true);
-    s.setMediaPlaybackRequiresUserGesture(false);
-
-    if (Build.VERSION.SDK_INT >= 19) {
-      web.setLayerType(WebView.LAYER_TYPE_HARDWARE, null);
-    }
-
-    web.setWebViewClient(new WebViewClient() {
-      @Override
-      public boolean shouldOverrideUrlLoading(WebView view, String url) {
-        return handleUrl(view, url);
-      }
-      @Override
-      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-        if (Build.VERSION.SDK_INT >= 21) {
-          return handleUrl(view, String.valueOf(request.getUrl()));
-        }
-        return false;
-      }
-
-      @Override
-      public void onPageFinished(WebView view, String url) {
-        super.onPageFinished(view, url);
-        // 降级兜底：把 window.open/_blank 统一在当前 WebView 打开
-        String js =
-          "(function(){try{" +
-            "window.open=function(u){if(u){location.href=u;}};" +
-            "var as=document.querySelectorAll('a[target=\"_blank\"]');" +
-            "for(var i=0;i<as.length;i++){as[i].setAttribute('target','_self');}" +
-          "}catch(e){}})();";
-        if (Build.VERSION.SDK_INT >= 19) view.evaluateJavascript(js, null);
-        else view.loadUrl("javascript:" + js);
-      }
-
-      private boolean handleUrl(WebView v, String url) {
-        if (url == null || url.length() == 0) return true;
-        if (url.startsWith("http://") || url.startsWith("https://")) {
-          v.loadUrl(url);
-          return true;
-        }
-        if (url.startsWith("#") || url.startsWith("about:")) {
-          return true;
-        }
-        // 相对路径 -> 以本地站点为基准解析
-        try {
-          String abs = BASE + url.replaceFirst("^/+", "");
-          v.loadUrl(abs);
-          return true;
-        } catch (Exception e) {
-          return true;
-        }
-      }
-    });
-
-    web.setWebChromeClient(new WebChromeClient() {
-      @Override
-      public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
-        // 统一在当前 WebView 打开（主要依赖 onPageFinished 注入脚本）
-        return false;
-      }
-    });
-
-    web.loadUrl(BASE + "index.html");
+  LocalHttpServer(Context ctx, int port) {
+    super("127.0.0.1", port);
+    this.am = ctx.getAssets();
   }
 
-  @Override protected void onDestroy() {
-    try { if (server != null) server.stop(); } catch (Exception ignored) {}
-    super.onDestroy();
+  @Override
+  public Response serve(IHTTPSession session) {
+    String path = session.getUri(); // 形如 /index.html
+    if ("/".equals(path)) path = "/index.html";
+    try {
+      if ("/__shim__/id-shim.js".equals(path)) {
+        InputStream in = am.open("id-shim.js");
+        return Response.newChunkedResponse(Status.OK, "application/javascript", in);
+      }
+
+      // 强制本地：不存在就 404
+      if (path.endsWith(".html")) {
+        InputStream inRaw = am.open(stripLeadingSlash(path));
+        String html = readAll(inRaw, "UTF-8");
+        // 在 webjs.js 之前强制注入 id-shim（确保 4.4.4 先装配 ID 变量）
+        String token = "<script type=\"text/javascript\" src=\"webjs.js\"></script>";
+        if (html.contains(token)) {
+          html = html.replace(token,
+            "<script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n" + token);
+        } else {
+          html = html.replace("</head>",
+            "  <script type=\"text/javascript\" src=\"/__shim__/id-shim.js\"></script>\n</head>");
+        }
+        return Response.newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", html);
+      }
+
+      InputStream in = am.open(stripLeadingSlash(path));
+      return Response.newChunkedResponse(Status.OK, guessMime(path), in);
+
+    } catch (IOException e) {
+      String msg = "404 Not Found (local-only): " + path;
+      return Response.newFixedLengthResponse(Status.NOT_FOUND, "text/plain; charset=utf-8", msg);
+    }
+  }
+
+  private String stripLeadingSlash(String p) {
+    return p.startsWith("/") ? p.substring(1) : p;
+  }
+
+  private String guessMime(String path) {
+    String p = path.toLowerCase();
+    if (p.endsWith(".html")||p.endsWith(".htm")) return "text/html; charset=utf-8";
+    if (p.endsWith(".js"))   return "application/javascript";
+    if (p.endsWith(".css"))  return "text/css";
+    if (p.endsWith(".svg"))  return "image/svg+xml";
+    if (p.endsWith(".png"))  return "image/png";
+    if (p.endsWith(".jpg")||p.endsWith(".jpeg")) return "image/jpeg";
+    if (p.endsWith(".gif"))  return "image/gif";
+    if (p.endsWith(".webp")) return "image/webp";
+    if (p.endsWith(".mp4"))  return "video/mp4";
+    if (p.endsWith(".m3u8")) return "application/vnd.apple.mpegurl";
+    if (p.endsWith(".ts"))   return "video/mp2t";
+    return "application/octet-stream";
+  }
+
+  private String readAll(InputStream in, String enc) throws IOException {
+    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+    byte[] buf = new byte[8192];
+    int n;
+    try {
+      while ((n = in.read(buf)) > 0) {
+        bos.write(buf, 0, n);
+      }
+    } finally {
+      try { in.close(); } catch (Throwable ignore) {}
+    }
+    return bos.toString(enc);
   }
 }
