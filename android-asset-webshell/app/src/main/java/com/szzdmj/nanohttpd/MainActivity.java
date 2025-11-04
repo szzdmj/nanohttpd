@@ -3,6 +3,8 @@ package com.szzdmj.nanohttpd;
 import android.annotation.SuppressLint;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.webkit.ConsoleMessage;
 import android.webkit.SslErrorHandler;
@@ -13,6 +15,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.widget.Toast;
 
@@ -20,10 +23,7 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
-// 注意：R 属于 app 的 namespace（build.gradle 配置为 com.szzdmj.nanohttpd.webshell）
 import com.szzdmj.nanohttpd.webshell.R;
-
-// 需要该 import 才能使用 SOCKET_READ_TIMEOUT 常量
 import fi.iki.elonen.NanoHTTPD;
 
 import java.io.InputStream;
@@ -34,6 +34,15 @@ public class MainActivity extends AppCompatActivity {
   private static final String BASE = "http://127.0.0.1:12721/";
   private static final String ASSET_INDEX = "file:///android_asset/index.html";
 
+  // 错误码（退出前抛回桌面）
+  private static final int EC_NO_INTERNET_PERMISSION = 9001;
+  private static final int EC_SERVER_START_FAIL      = 9002;
+  private static final int EC_INDEX_LOAD_ERROR       = 9101;
+  private static final int EC_RENDER_GONE            = 9201;
+  private static final int EC_UNCAUGHT               = 9999;
+
+  private static final boolean EXIT_ON_FATAL = true;
+
   private WebView web;
   private LocalHttpServer server;
   private boolean serverStarted = false;
@@ -43,16 +52,15 @@ public class MainActivity extends AppCompatActivity {
     super.onCreate(savedInstanceState);
     Log.i(TAG, "onCreate() enter, sdk=" + Build.VERSION.SDK_INT);
 
-    // 初始化日志与全局崩溃捕获
     CrashLogger.init(getApplicationContext());
     Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
       @Override public void uncaughtException(Thread t, Throwable e) {
-        CrashLogger.err("FATAL crash in thread=" + t.getName(), e);
+        // 最后一层兜底：回桌面 + 退出码
+        fatalExit(EC_UNCAUGHT, "Uncaught in thread=" + t.getName(), e);
       }
     });
     Log.i(TAG, "Crash log path = " + CrashLogger.getLogPath());
 
-    // 启用 WebView 远程调试（4.4+）
     try {
       if (Build.VERSION.SDK_INT >= 19) {
         WebView.setWebContentsDebuggingEnabled(true);
@@ -62,16 +70,11 @@ public class MainActivity extends AppCompatActivity {
       Log.w(TAG, "Enable debugging failed", t);
     }
 
-    // 权限检测（INTERNET 为 normal 权限，安装即赋予；若清单未声明，这里会返回 DENIED）
     boolean hasInternet = ContextCompat.checkSelfPermission(
         this, Manifest.permission.INTERNET) == PackageManager.PERMISSION_GRANTED;
     Log.i(TAG, "permission INTERNET granted=" + hasInternet);
-    if (!hasInternet) {
-      // 清单未声明时才会发生；直接提示并走本地 assets 兜底，避免“一闪即退”
-      Toast.makeText(this, "未声明网络权限：将改用本地页面", Toast.LENGTH_LONG).show();
-    }
 
-    // 尝试启动本地 HTTP 服务器（需要 INTERNET）
+    // 尝试启动本地 HTTP 服务器
     if (hasInternet) {
       try {
         server = new LocalHttpServer(getApplicationContext(), 12721);
@@ -88,17 +91,30 @@ public class MainActivity extends AppCompatActivity {
           } catch (Throwable t2) {
             serverStarted = false;
             CrashLogger.err("LocalHttpServer start() failed", t2);
-            Toast.makeText(this, "本地服务器启动失败，改用本地页面", Toast.LENGTH_LONG).show();
+            if (EXIT_ON_FATAL) {
+              fatalExit(EC_SERVER_START_FAIL, "Local server failed to start", t2);
+              return;
+            } else {
+              Toast.makeText(this, "本地服务器启动失败，改用本地页面", Toast.LENGTH_LONG).show();
+            }
           }
         }
       } catch (Throwable t) {
         serverStarted = false;
         CrashLogger.err("Create LocalHttpServer failed", t);
-        Toast.makeText(this, "创建本地服务器失败，改用本地页面", Toast.LENGTH_LONG).show();
+        if (EXIT_ON_FATAL) {
+          fatalExit(EC_SERVER_START_FAIL, "Create LocalHttpServer failed", t);
+          return;
+        } else {
+          Toast.makeText(this, "创建本地服务器失败，改用本地页面", Toast.LENGTH_LONG).show();
+        }
       }
+    } else {
+      // 若清单没声明 INTERNET，这里会是 false（老版本曾缺失）
+      CrashLogger.w("INTERNET permission NOT granted (manifest missing?)", null);
+      Toast.makeText(this, "未声明网络权限：优先改用本地页面", Toast.LENGTH_LONG).show();
     }
 
-    // 核心资源自检：assets/index.html 与 id-shim.js
     verifyAssets("index.html");
     verifyAssets("id-shim.js");
 
@@ -123,7 +139,7 @@ public class MainActivity extends AppCompatActivity {
 
     web.setWebViewClient(new WebViewClient() {
       @Override
-      @SuppressWarnings("deprecation") // 为旧签名去掉弃用警告（兼容 4.4.4）
+      @SuppressWarnings("deprecation")
       public boolean shouldOverrideUrlLoading(WebView view, String url) {
         Log.i(TAG, "shouldOverrideUrlLoading(deprecated): " + url);
         return handleUrl(view, url);
@@ -151,6 +167,10 @@ public class MainActivity extends AppCompatActivity {
       public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
         Log.e(TAG, "onReceivedError(deprecated): code=" + errorCode
             + ", desc=" + description + ", url=" + failingUrl);
+        // 仅对主文档失败触发退出（避免子资源 404 误判）
+        if (isLikelyMainDoc(failingUrl)) {
+          fatalExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + description, null);
+        }
         super.onReceivedError(view, errorCode, description, failingUrl);
       }
 
@@ -160,6 +180,9 @@ public class MainActivity extends AppCompatActivity {
           Log.e(TAG, "onReceivedError: code=" + error.getErrorCode()
               + ", desc=" + error.getDescription()
               + ", url=" + request.getUrl());
+          if (request.isForMainFrame()) {
+            fatalExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + error.getDescription(), null);
+          }
         } else {
           Log.e(TAG, "onReceivedError(<23 shim)");
         }
@@ -180,7 +203,8 @@ public class MainActivity extends AppCompatActivity {
         } else {
           Log.e(TAG, "onRenderProcessGone(<26 shim)");
         }
-        return super.onRenderProcessGone(view, detail);
+        fatalExit(EC_RENDER_GONE, "WebView render process gone", null);
+        return true; // 我们接管退出
       }
 
       private boolean handleUrl(WebView v, String url) {
@@ -201,7 +225,7 @@ public class MainActivity extends AppCompatActivity {
           v.loadUrl(abs);
           return true;
         } catch (Throwable t) {
-          CrashLogger.err("handleUrl failed for: " + url, t);
+          fatalExit(EC_INDEX_LOAD_ERROR, "handleUrl failed: " + url, t);
           return true;
         }
       }
@@ -219,18 +243,6 @@ public class MainActivity extends AppCompatActivity {
         }
         return super.onConsoleMessage(cm);
       }
-
-      @Override
-      public boolean onJsAlert(WebView view, String url, String message, android.webkit.JsResult result) {
-        Log.i(TAG, "onJsAlert: url=" + url + ", msg=" + message);
-        return super.onJsAlert(view, url, message, result);
-      }
-
-      @Override
-      public boolean onJsConfirm(WebView view, String url, String message, android.webkit.JsResult result) {
-        Log.i(TAG, "onJsConfirm: url=" + url + ", msg=" + message);
-        return super.onJsConfirm(view, url, message, result);
-      }
     });
 
     // 首次加载：优先本地服务器，否则直接从 assets 加载
@@ -244,24 +256,22 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
+  private boolean isLikelyMainDoc(String url) {
+    if (url == null) return false;
+    String u = url.toLowerCase();
+    return u.contains("index.html") || u.equals(BASE.toLowerCase()) || u.equals(ASSET_INDEX.toLowerCase());
+  }
+
   private void injectJsHooks(WebView view) {
     try {
-      String js = ""
-          + "(function(){try{"
-          + "  if(!window.__webshellHooked){"
-          + "    window.__webshellHooked = true;"
-          + "    var _e = window.onerror;"
-          + "    window.onerror = function(m,src,ln,col,err){"
-          + "      try{console.error('JS-ERROR: '+m+' @ '+src+':'+ln+':'+(col||0));}catch(_){}"
-          + "      if(typeof _e==='function'){try{_e.apply(this,arguments);}catch(_){}}"
-          + "    };"
-          + "  }"
-          + "}catch(e){console.error('INJECT-HOOK-FAIL:'+e);}})();";
+      String js = "(function(){try{if(!window.__webshellHooked){window.__webshellHooked=true;"
+          + "var _e=window.onerror;window.onerror=function(m,src,ln,col,err){try{console.error('JS-ERROR: '+m+' @ '+src+':'+ln+':'+(col||0));}catch(_){}};"
+          + "}}catch(e){console.error('INJECT-HOOK-FAIL:'+e);}})();";
       if (Build.VERSION.SDK_INT >= 19) view.evaluateJavascript(js, null);
       else view.loadUrl("javascript:" + js);
       Log.i(TAG, "injectJsHooks() done");
     } catch (Throwable t) {
-      CrashLogger.err("injectJsHooks failed", t);
+      fatalExit(EC_INDEX_LOAD_ERROR, "injectJsHooks failed", t);
     }
   }
 
@@ -275,9 +285,40 @@ public class MainActivity extends AppCompatActivity {
       while ((n = in.read(buf)) > 0) total += n;
       Log.i(TAG, "asset ok: " + name + " (" + total + " bytes)");
     } catch (Throwable t) {
-      CrashLogger.err("asset missing or open failed: " + name, t);
+      fatalExit(EC_INDEX_LOAD_ERROR, "asset missing/open fail: " + name, t);
     } finally {
       try { if (in != null) in.close(); } catch (Throwable ignore) {}
+    }
+  }
+
+  private void fatalExit(final int code, final String msg, final Throwable t) {
+    // 统一处理：写日志 + Toast + 回桌面 + 进程退出
+    CrashLogger.err("FATAL[" + code + "]: " + msg, t);
+    Log.e(TAG, "FATAL[" + code + "]: " + msg, t);
+    try {
+      Handler h = new Handler(Looper.getMainLooper());
+      h.post(new Runnable() {
+        @Override public void run() {
+          try {
+            Toast.makeText(MainActivity.this, "错误码: " + code + "（即将返回桌面）", Toast.LENGTH_LONG).show();
+          } catch (Throwable ignore) {}
+          try {
+            Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(home);
+          } catch (Throwable ignore) {}
+          try { finishAffinity(); } catch (Throwable ignore) {}
+          h.postDelayed(new Runnable() {
+            @Override public void run() {
+              try { System.exit(code); } catch (Throwable ignore) {}
+            }
+          }, 400);
+        }
+      });
+    } catch (Throwable e) {
+      // 退而求其次
+      try { System.exit(code); } catch (Throwable ignore) {}
     }
   }
 
