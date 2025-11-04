@@ -23,7 +23,6 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
-// BuildConfig 属于 app 的 namespace（applicationId = com.szzdmj.nanohttpd.webshell）
 import com.szzdmj.nanohttpd.webshell.BuildConfig;
 import com.szzdmj.nanohttpd.webshell.R;
 
@@ -37,20 +36,17 @@ public class MainActivity extends AppCompatActivity {
 
   private static final String TAG = "WebShell/MainActivity";
 
-  // 端口与地址
   private static final int BASE_PORT = 12721;
   private static final int PORT_TRY_MAX = 10; // 12721..12730
   private static String BASE = "http://127.0.0.1:" + BASE_PORT + "/";
   private static final String ASSET_INDEX = "file:///android_asset/index.html";
 
-  // 错误码
   private static final int EC_NO_INTERNET_PERMISSION = 9001;
   private static final int EC_SERVER_START_FAIL      = 9002;
   private static final int EC_INDEX_LOAD_ERROR       = 9101;
   private static final int EC_RENDER_GONE            = 9201;
   private static final int EC_UNCAUGHT               = 9999;
 
-  // Debug 下不自动退出；Release 下自动退出
   private static final boolean EXIT_ON_FATAL = !BuildConfig.DEBUG;
 
   private WebView web;
@@ -66,7 +62,6 @@ public class MainActivity extends AppCompatActivity {
     CrashLogger.init(getApplicationContext());
     Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
       @Override public void uncaughtException(Thread t, Throwable e) {
-        // 兜底：回桌面 + 退出码
         fatalExit(EC_UNCAUGHT, "Uncaught in thread=" + t.getName(), e);
       }
     });
@@ -88,16 +83,13 @@ public class MainActivity extends AppCompatActivity {
       warnOrExit(EC_NO_INTERNET_PERMISSION, "INTERNET permission NOT granted (manifest missing?)", null);
     }
 
-    // 尝试多端口启动本地 HTTP 服务器
     if (hasInternet) {
       startServerWithFallback();
       BASE = "http://127.0.0.1:" + serverPort + "/";
       Log.i(TAG, "BASE = " + BASE);
-      // 启动后自测：ping 一次 /index.html，确认可连
       pingServer(BASE + "index.html");
     }
 
-    // 自检 assets
     verifyAssets("index.html");
     verifyAssets("id-shim.js");
 
@@ -115,7 +107,11 @@ public class MainActivity extends AppCompatActivity {
         + ", DOMStorage=" + s.getDomStorageEnabled()
         + ", DB=" + s.getDatabaseEnabled());
 
-    if (Build.VERSION.SDK_INT >= 19) {
+    // 关键：在 KitKat/KitKat Watch 强制软件渲染，避免 GPU 相关崩溃
+    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.KITKAT_WATCH) {
+      web.setLayerType(WebView.LAYER_TYPE_SOFTWARE, null);
+      Log.i(TAG, "WebView layer=SOFTWARE (KitKat compatibility)");
+    } else {
       web.setLayerType(WebView.LAYER_TYPE_HARDWARE, null);
       Log.i(TAG, "WebView layer=HARDWARE");
     }
@@ -186,7 +182,7 @@ public class MainActivity extends AppCompatActivity {
           Log.e(TAG, "onRenderProcessGone(<26 shim)");
         }
         warnOrExit(EC_RENDER_GONE, "WebView render process gone", null);
-        return true; // 我们接管后续
+        return true;
       }
 
       private boolean handleUrl(WebView v, String url) {
@@ -201,7 +197,6 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "ignore special: " + url);
             return true;
           }
-          // 相对路径 -> 以本地站点为基准解析
           String abs = BASE + url.replaceFirst("^/+", "");
           Log.i(TAG, "navigate relative -> " + abs);
           v.loadUrl(abs);
@@ -227,7 +222,6 @@ public class MainActivity extends AppCompatActivity {
       }
     });
 
-    // 首次加载：优先本地服务器，否则直接从 assets 加载
     if (serverStarted) {
       String first = BASE + "index.html";
       Log.i(TAG, "web.loadUrl => " + first);
@@ -238,7 +232,6 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  // 启动 NanoHTTPD，失败则尝试下一端口
   private void startServerWithFallback() {
     for (int i = 0; i < PORT_TRY_MAX; i++) {
       int port = BASE_PORT + i;
@@ -270,7 +263,6 @@ public class MainActivity extends AppCompatActivity {
     warnOrExit(EC_SERVER_START_FAIL, "Local server failed on all ports (" + BASE_PORT + "~" + (BASE_PORT+PORT_TRY_MAX-1) + ")", null);
   }
 
-  // 启动后自测：直接用 HttpURLConnection 访问本地 index.html
   private void pingServer(final String url) {
     new Thread(new Runnable() {
       @Override public void run() {
@@ -325,38 +317,24 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
-  // Debug: 只提示并留在页面；Release: 回桌面后退出
+  // Debug：只提示不退出；Release：回桌面并退出
   private void warnOrExit(final int code, final String msg, final Throwable t) {
     CrashLogger.err("FATAL?[" + code + "]: " + msg, t);
     Log.e(TAG, "FATAL?[" + code + "]: " + msg, t);
-    try {
-      Toast.makeText(this, "错误码: " + code + " " + (EXIT_ON_FATAL ? "（将返回桌面）" : "（调试模式，不退出）"), Toast.LENGTH_LONG).show();
-    } catch (Throwable ignore) {}
-
-    if (!EXIT_ON_FATAL) return; // 调试：不退出
-
-    // Release：回桌面并退出
-    try {
-      Intent home = new Intent(Intent.ACTION_MAIN);
-      home.addCategory(Intent.CATEGORY_HOME);
-      home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-      startActivity(home);
-    } catch (Throwable ignore) {}
-    try { finishAffinity(); } catch (Throwable ignore) {}
-    new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-      @Override public void run() {
-        try { System.exit(code); } catch (Throwable ignore) {}
-      }
-    }, 600);
+    try { Toast.makeText(this, "错误码: " + code + (EXIT_ON_FATAL ? "（将返回桌面）" : "（调试模式，不退出）"), Toast.LENGTH_LONG).show(); } catch (Throwable ignore) {}
+    if (!EXIT_ON_FATAL) return;
+    toHomeAndExit(code, 600);
   }
 
-  // 总是回桌面并退出（用于 UncaughtExceptionHandler）
+  // 兜底：总是回桌面并退出（用于未捕获异常）
   private void fatalExit(final int code, final String msg, final Throwable t) {
     CrashLogger.err("FATAL[" + code + "]: " + msg, t);
     Log.e(TAG, "FATAL[" + code + "]: " + msg, t);
-    try {
-      Toast.makeText(this, "错误码: " + code + "（即将返回桌面）", Toast.LENGTH_LONG).show();
-    } catch (Throwable ignore) {}
+    try { Toast.makeText(this, "错误码: " + code + "（即将返回桌面）", Toast.LENGTH_LONG).show(); } catch (Throwable ignore) {}
+    toHomeAndExit(code, 400);
+  }
+
+  private void toHomeAndExit(final int code, long delayMs) {
     try {
       Intent home = new Intent(Intent.ACTION_MAIN);
       home.addCategory(Intent.CATEGORY_HOME);
@@ -368,7 +346,7 @@ public class MainActivity extends AppCompatActivity {
       @Override public void run() {
         try { System.exit(code); } catch (Throwable ignore) {}
       }
-    }, 400);
+    }, delayMs);
   }
 
   @Override protected void onStart()   { super.onStart();   Log.i(TAG, "onStart()"); }
