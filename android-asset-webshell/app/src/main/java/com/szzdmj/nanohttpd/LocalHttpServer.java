@@ -16,15 +16,16 @@ class LocalHttpServer extends NanoHTTPD {
   private static final String TAG = "WebShell/LocalHttpServer";
   private final AssetManager am;
 
+  // 关键改动：不再限定 127.0.0.1，改为绑定所有网卡（更通用、兼容某些机型）
   LocalHttpServer(Context ctx, int port) {
-    super("127.0.0.1", port);
+    super(port);
     this.am = ctx.getAssets();
-    Log.i(TAG, "constructed, port=" + port);
+    Log.i(TAG, "constructed, bind=0.0.0.0, port=" + port);
   }
 
   @Override
   public Response serve(IHTTPSession session) {
-    String path = session.getUri(); // 形如 /index.html
+    String path = session.getUri();
     Log.i(TAG, "serve() uri=" + path + ", method=" + session.getMethod());
     if ("/".equals(path)) path = "/index.html";
     try {
