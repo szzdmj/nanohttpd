@@ -23,15 +23,22 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
+import com.szzdmj.nanohttpd.webshell.BuildConfig;
 import com.szzdmj.nanohttpd.webshell.R;
 import fi.iki.elonen.NanoHTTPD;
 
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 public class MainActivity extends AppCompatActivity {
 
   private static final String TAG = "WebShell/MainActivity";
-  private static final String BASE = "http://127.0.0.1:12721/";
+
+  // 端口与地址
+  private static final int BASE_PORT = 12721;
+  private static final int PORT_TRY_MAX = 10; // 12721..12730
+  private static String BASE = "http://127.0.0.1:" + BASE_PORT + "/";
   private static final String ASSET_INDEX = "file:///android_asset/index.html";
 
   // 错误码（退出前抛回桌面）
@@ -41,21 +48,22 @@ public class MainActivity extends AppCompatActivity {
   private static final int EC_RENDER_GONE            = 9201;
   private static final int EC_UNCAUGHT               = 9999;
 
-  private static final boolean EXIT_ON_FATAL = true;
+  // Debug 下不自动退出，Release 下退出
+  private static final boolean EXIT_ON_FATAL = !BuildConfig.DEBUG;
 
   private WebView web;
   private LocalHttpServer server;
   private boolean serverStarted = false;
+  private int serverPort = BASE_PORT;
 
   @SuppressLint("SetJavaScriptEnabled")
   @Override protected void onCreate(@Nullable Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
-    Log.i(TAG, "onCreate() enter, sdk=" + Build.VERSION.SDK_INT);
+    Log.i(TAG, "onCreate() enter, sdk=" + Build.VERSION.SDK_INT + ", debug=" + BuildConfig.DEBUG);
 
     CrashLogger.init(getApplicationContext());
     Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
       @Override public void uncaughtException(Thread t, Throwable e) {
-        // 最后一层兜底：回桌面 + 退出码
         fatalExit(EC_UNCAUGHT, "Uncaught in thread=" + t.getName(), e);
       }
     });
@@ -73,48 +81,21 @@ public class MainActivity extends AppCompatActivity {
     boolean hasInternet = ContextCompat.checkSelfPermission(
         this, Manifest.permission.INTERNET) == PackageManager.PERMISSION_GRANTED;
     Log.i(TAG, "permission INTERNET granted=" + hasInternet);
-
-    // 尝试启动本地 HTTP 服务器
-    if (hasInternet) {
-      try {
-        server = new LocalHttpServer(getApplicationContext(), 12721);
-        try {
-          server.start();
-          serverStarted = true;
-          Log.i(TAG, "LocalHttpServer.start() ok @ " + BASE);
-        } catch (Throwable t1) {
-          Log.w(TAG, "server.start() failed, retry with timeout/daemon", t1);
-          try {
-            server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
-            serverStarted = true;
-            Log.i(TAG, "LocalHttpServer.start(timeout,daemon) ok");
-          } catch (Throwable t2) {
-            serverStarted = false;
-            CrashLogger.err("LocalHttpServer start() failed", t2);
-            if (EXIT_ON_FATAL) {
-              fatalExit(EC_SERVER_START_FAIL, "Local server failed to start", t2);
-              return;
-            } else {
-              Toast.makeText(this, "本地服务器启动失败，改用本地页面", Toast.LENGTH_LONG).show();
-            }
-          }
-        }
-      } catch (Throwable t) {
-        serverStarted = false;
-        CrashLogger.err("Create LocalHttpServer failed", t);
-        if (EXIT_ON_FATAL) {
-          fatalExit(EC_SERVER_START_FAIL, "Create LocalHttpServer failed", t);
-          return;
-        } else {
-          Toast.makeText(this, "创建本地服务器失败，改用本地页面", Toast.LENGTH_LONG).show();
-        }
-      }
-    } else {
-      // 若清单没声明 INTERNET，这里会是 false（老版本曾缺失）
-      CrashLogger.w("INTERNET permission NOT granted (manifest missing?)", null);
-      Toast.makeText(this, "未声明网络权限：优先改用本地页面", Toast.LENGTH_LONG).show();
+    if (!hasInternet) {
+      // 清单没声明才会发生——会导致服务器不可启动
+      warnOrExit(EC_NO_INTERNET_PERMISSION, "INTERNET permission NOT granted (manifest missing?)", null);
     }
 
+    // 尝试多端口启动本地 HTTP 服务器
+    if (hasInternet) {
+      startServerWithFallback();
+      BASE = "http://127.0.0.1:" + serverPort + "/";
+      Log.i(TAG, "BASE = " + BASE);
+      // 启动后自测：ping 一次 /index.html，确认可连
+      pingServer(BASE + "index.html");
+    }
+
+    // 自检 assets
     verifyAssets("index.html");
     verifyAssets("id-shim.js");
 
@@ -167,9 +148,8 @@ public class MainActivity extends AppCompatActivity {
       public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
         Log.e(TAG, "onReceivedError(deprecated): code=" + errorCode
             + ", desc=" + description + ", url=" + failingUrl);
-        // 仅对主文档失败触发退出（避免子资源 404 误判）
         if (isLikelyMainDoc(failingUrl)) {
-          fatalExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + description, null);
+          warnOrExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + description, null);
         }
         super.onReceivedError(view, errorCode, description, failingUrl);
       }
@@ -181,7 +161,7 @@ public class MainActivity extends AppCompatActivity {
               + ", desc=" + error.getDescription()
               + ", url=" + request.getUrl());
           if (request.isForMainFrame()) {
-            fatalExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + error.getDescription(), null);
+            warnOrExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + error.getDescription(), null);
           }
         } else {
           Log.e(TAG, "onReceivedError(<23 shim)");
@@ -203,8 +183,8 @@ public class MainActivity extends AppCompatActivity {
         } else {
           Log.e(TAG, "onRenderProcessGone(<26 shim)");
         }
-        fatalExit(EC_RENDER_GONE, "WebView render process gone", null);
-        return true; // 我们接管退出
+        warnOrExit(EC_RENDER_GONE, "WebView render process gone", null);
+        return true; // 我们接管后续
       }
 
       private boolean handleUrl(WebView v, String url) {
@@ -225,7 +205,7 @@ public class MainActivity extends AppCompatActivity {
           v.loadUrl(abs);
           return true;
         } catch (Throwable t) {
-          fatalExit(EC_INDEX_LOAD_ERROR, "handleUrl failed: " + url, t);
+          warnOrExit(EC_INDEX_LOAD_ERROR, "handleUrl failed: " + url, t);
           return true;
         }
       }
@@ -256,22 +236,74 @@ public class MainActivity extends AppCompatActivity {
     }
   }
 
+  // 启动 NanoHTTPD，失败则尝试下一端口
+  private void startServerWithFallback() {
+    for (int i = 0; i < PORT_TRY_MAX; i++) {
+      int port = BASE_PORT + i;
+      try {
+        server = new LocalHttpServer(getApplicationContext(), port);
+        try {
+          server.start();
+          serverStarted = true;
+          serverPort = port;
+          Log.i(TAG, "LocalHttpServer.start() ok @ 127.0.0.1:" + port);
+          return;
+        } catch (Throwable t1) {
+          Log.w(TAG, "server.start() failed on port " + port + ", retry timeout/daemon", t1);
+          try {
+            server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
+            serverStarted = true;
+            serverPort = port;
+            Log.i(TAG, "LocalHttpServer.start(timeout,daemon) ok @" + port);
+            return;
+          } catch (Throwable t2) {
+            Log.w(TAG, "server.start(timeout,daemon) failed @" + port, t2);
+          }
+        }
+      } catch (Throwable t) {
+        Log.w(TAG, "Create LocalHttpServer failed @" + port, t);
+      }
+    }
+    serverStarted = false;
+    warnOrExit(EC_SERVER_START_FAIL, "Local server failed on all ports (" + BASE_PORT + "~" + (BASE_PORT+PORT_TRY_MAX-1) + ")", null);
+  }
+
+  // 启动后自测：直接用 HttpURLConnection 访问本地 index.html
+  private void pingServer(final String url) {
+    new Thread(new Runnable() {
+      @Override public void run() {
+        try {
+          HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+          c.setConnectTimeout(1200);
+          c.setReadTimeout(1200);
+          int code = c.getResponseCode();
+          Log.i(TAG, "ping " + url + " -> HTTP " + code);
+          c.disconnect();
+        } catch (Throwable t) {
+          warnOrExit(EC_SERVER_START_FAIL, "ping failed: " + url, t);
+        }
+      }
+    }, "ping-local").start();
+  }
+
   private boolean isLikelyMainDoc(String url) {
     if (url == null) return false;
     String u = url.toLowerCase();
-    return u.contains("index.html") || u.equals(BASE.toLowerCase()) || u.equals(ASSET_INDEX.toLowerCase());
+    return u.contains("index.html")
+        || u.equals(("http://127.0.0.1:" + serverPort + "/").toLowerCase())
+        || u.equals(ASSET_INDEX.toLowerCase());
   }
 
   private void injectJsHooks(WebView view) {
     try {
       String js = "(function(){try{if(!window.__webshellHooked){window.__webshellHooked=true;"
-          + "var _e=window.onerror;window.onerror=function(m,src,ln,col,err){try{console.error('JS-ERROR: '+m+' @ '+src+':'+ln+':'+(col||0));}catch(_){}};"
+          + "var _e=window.onerror;window.onerror=function(m,src,ln,col,err){try{console.error('JS-ERROR: '+m+' @ '+src+':'+ln+':'+(col||0));}catch(_){}; if(typeof _e==='function'){try{_e.apply(this,arguments);}catch(_){}}};"
           + "}}catch(e){console.error('INJECT-HOOK-FAIL:'+e);}})();";
       if (Build.VERSION.SDK_INT >= 19) view.evaluateJavascript(js, null);
       else view.loadUrl("javascript:" + js);
       Log.i(TAG, "injectJsHooks() done");
     } catch (Throwable t) {
-      fatalExit(EC_INDEX_LOAD_ERROR, "injectJsHooks failed", t);
+      warnOrExit(EC_INDEX_LOAD_ERROR, "injectJsHooks failed", t);
     }
   }
 
@@ -285,41 +317,35 @@ public class MainActivity extends AppCompatActivity {
       while ((n = in.read(buf)) > 0) total += n;
       Log.i(TAG, "asset ok: " + name + " (" + total + " bytes)");
     } catch (Throwable t) {
-      fatalExit(EC_INDEX_LOAD_ERROR, "asset missing/open fail: " + name, t);
+      warnOrExit(EC_INDEX_LOAD_ERROR, "asset missing/open fail: " + name, t);
     } finally {
       try { if (in != null) in.close(); } catch (Throwable ignore) {}
     }
   }
 
-  private void fatalExit(final int code, final String msg, final Throwable t) {
-    // 统一处理：写日志 + Toast + 回桌面 + 进程退出
-    CrashLogger.err("FATAL[" + code + "]: " + msg, t);
-    Log.e(TAG, "FATAL[" + code + "]: " + msg, t);
+  // Debug: 只提示并留在页面；Release: 回桌面后退出
+  private void warnOrExit(final int code, final String msg, final Throwable t) {
+    CrashLogger.err("FATAL?[" + code + "]: " + msg, t);
+    Log.e(TAG, "FATAL?[" + code + "]: " + msg, t);
     try {
-      Handler h = new Handler(Looper.getMainLooper());
-      h.post(new Runnable() {
-        @Override public void run() {
-          try {
-            Toast.makeText(MainActivity.this, "错误码: " + code + "（即将返回桌面）", Toast.LENGTH_LONG).show();
-          } catch (Throwable ignore) {}
-          try {
-            Intent home = new Intent(Intent.ACTION_MAIN);
-            home.addCategory(Intent.CATEGORY_HOME);
-            home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(home);
-          } catch (Throwable ignore) {}
-          try { finishAffinity(); } catch (Throwable ignore) {}
-          h.postDelayed(new Runnable() {
-            @Override public void run() {
-              try { System.exit(code); } catch (Throwable ignore) {}
-            }
-          }, 400);
-        }
-      });
-    } catch (Throwable e) {
-      // 退而求其次
-      try { System.exit(code); } catch (Throwable ignore) {}
-    }
+      Toast.makeText(this, "错误码: " + code + " " + (EXIT_ON_FATAL ? "（将返回桌面）" : "（调试模式，不退出）"), Toast.LENGTH_LONG).show();
+    } catch (Throwable ignore) {}
+
+    if (!EXIT_ON_FATAL) return; // 调试：不退出
+
+    // Release：回桌面并退出
+    try {
+      Intent home = new Intent(Intent.ACTION_MAIN);
+      home.addCategory(Intent.CATEGORY_HOME);
+      home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      startActivity(home);
+    } catch (Throwable ignore) {}
+    try { finishAffinity(); } catch (Throwable ignore) {}
+    new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+      @Override public void run() {
+        try { System.exit(code); } catch (Throwable ignore) {}
+      }
+    }, 600);
   }
 
   @Override protected void onStart()   { super.onStart();   Log.i(TAG, "onStart()"); }
