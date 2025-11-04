@@ -2,18 +2,23 @@
 <manifest package="com.szzdmj.nanohttpd.webshell"
     xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 联网相关（安装界面会显示“完全的网络访问”等权限文案） -->
+    <!-- 联网相关（安装界面会显示“完全的网络访问/联网方式”等权限文案） -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
 
+    <!-- 可选：仅当你未来想写公开外部目录时再使用；当前方案写外部私有目录本身不需要这两个权限 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+
     <application
         android:label="@string/app_name"
         android:allowBackup="true"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true">
         <activity android:name=".MainActivity"
                   android:exported="true">
             <intent-filter>
