@@ -23,8 +23,10 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
+// BuildConfig 属于 app 的 namespace（applicationId = com.szzdmj.nanohttpd.webshell）
 import com.szzdmj.nanohttpd.webshell.BuildConfig;
 import com.szzdmj.nanohttpd.webshell.R;
+
 import fi.iki.elonen.NanoHTTPD;
 
 import java.io.InputStream;
@@ -41,14 +43,14 @@ public class MainActivity extends AppCompatActivity {
   private static String BASE = "http://127.0.0.1:" + BASE_PORT + "/";
   private static final String ASSET_INDEX = "file:///android_asset/index.html";
 
-  // 错误码（退出前抛回桌面）
+  // 错误码
   private static final int EC_NO_INTERNET_PERMISSION = 9001;
   private static final int EC_SERVER_START_FAIL      = 9002;
   private static final int EC_INDEX_LOAD_ERROR       = 9101;
   private static final int EC_RENDER_GONE            = 9201;
   private static final int EC_UNCAUGHT               = 9999;
 
-  // Debug 下不自动退出，Release 下退出
+  // Debug 下不自动退出；Release 下自动退出
   private static final boolean EXIT_ON_FATAL = !BuildConfig.DEBUG;
 
   private WebView web;
@@ -64,6 +66,7 @@ public class MainActivity extends AppCompatActivity {
     CrashLogger.init(getApplicationContext());
     Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
       @Override public void uncaughtException(Thread t, Throwable e) {
+        // 兜底：回桌面 + 退出码
         fatalExit(EC_UNCAUGHT, "Uncaught in thread=" + t.getName(), e);
       }
     });
@@ -82,7 +85,6 @@ public class MainActivity extends AppCompatActivity {
         this, Manifest.permission.INTERNET) == PackageManager.PERMISSION_GRANTED;
     Log.i(TAG, "permission INTERNET granted=" + hasInternet);
     if (!hasInternet) {
-      // 清单没声明才会发生——会导致服务器不可启动
       warnOrExit(EC_NO_INTERNET_PERMISSION, "INTERNET permission NOT granted (manifest missing?)", null);
     }
 
@@ -346,6 +348,27 @@ public class MainActivity extends AppCompatActivity {
         try { System.exit(code); } catch (Throwable ignore) {}
       }
     }, 600);
+  }
+
+  // 总是回桌面并退出（用于 UncaughtExceptionHandler）
+  private void fatalExit(final int code, final String msg, final Throwable t) {
+    CrashLogger.err("FATAL[" + code + "]: " + msg, t);
+    Log.e(TAG, "FATAL[" + code + "]: " + msg, t);
+    try {
+      Toast.makeText(this, "错误码: " + code + "（即将返回桌面）", Toast.LENGTH_LONG).show();
+    } catch (Throwable ignore) {}
+    try {
+      Intent home = new Intent(Intent.ACTION_MAIN);
+      home.addCategory(Intent.CATEGORY_HOME);
+      home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      startActivity(home);
+    } catch (Throwable ignore) {}
+    try { finishAffinity(); } catch (Throwable ignore) {}
+    new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+      @Override public void run() {
+        try { System.exit(code); } catch (Throwable ignore) {}
+      }
+    }, 400);
   }
 
   @Override protected void onStart()   { super.onStart();   Log.i(TAG, "onStart()"); }
