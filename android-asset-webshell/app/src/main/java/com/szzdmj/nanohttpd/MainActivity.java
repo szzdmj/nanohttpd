@@ -17,6 +17,11 @@ import android.webkit.WebViewClient;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.view.Gravity;
+import android.graphics.Color;
+import android.view.ViewGroup;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
@@ -38,7 +43,9 @@ public class MainActivity extends AppCompatActivity {
 
   private static final int BASE_PORT = 12721;
   private static final int PORT_TRY_MAX = 10; // 12721..12730
-  private static String BASE = "http://127.0.0.1:" + BASE_PORT + "/";
+
+  private static String BASE_127  = "http://127.0.0.1:" + BASE_PORT + "/";
+  private static String BASE_HOST = "http://localhost:" + BASE_PORT + "/";
   private static final String ASSET_INDEX = "file:///android_asset/index.html";
 
   private static final int EC_NO_INTERNET_PERMISSION = 9001;
@@ -53,6 +60,9 @@ public class MainActivity extends AppCompatActivity {
   private LocalHttpServer server;
   private boolean serverStarted = false;
   private int serverPort = BASE_PORT;
+
+  // 屏幕覆盖错误信息
+  private TextView overlay;
 
   @SuppressLint("SetJavaScriptEnabled")
   @Override protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -85,16 +95,29 @@ public class MainActivity extends AppCompatActivity {
 
     if (hasInternet) {
       startServerWithFallback();
-      BASE = "http://127.0.0.1:" + serverPort + "/";
-      Log.i(TAG, "BASE = " + BASE);
-      pingServer(BASE + "index.html");
+      // 同步两个基址到最终端口
+      BASE_127  = "http://127.0.0.1:" + serverPort + "/";
+      BASE_HOST = "http://localhost:" + serverPort + "/";
+      Log.i(TAG, "BASE_127=" + BASE_127 + ", BASE_HOST=" + BASE_HOST);
+      pingServer(BASE_127 + "index.html");
     }
-
-    verifyAssets("index.html");
-    verifyAssets("id-shim.js");
 
     setContentView(R.layout.activity_main);
     web = findViewById(R.id.web);
+
+    // 覆盖错误层
+    overlay = new TextView(this);
+    overlay.setTextColor(Color.WHITE);
+    overlay.setBackgroundColor(0xCC000000);
+    overlay.setTextSize(14);
+    overlay.setPadding(16, 16, 16, 16);
+    overlay.setGravity(Gravity.TOP | Gravity.START);
+    overlay.setText("启动中…");
+    FrameLayout root = findViewById(android.R.id.content);
+    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    lp.gravity = Gravity.TOP;
+    root.addView(overlay, lp);
 
     WebSettings s = web.getSettings();
     s.setJavaScriptEnabled(true);
@@ -103,11 +126,18 @@ public class MainActivity extends AppCompatActivity {
     s.setSupportMultipleWindows(true);
     s.setJavaScriptCanOpenWindowsAutomatically(true);
     s.setMediaPlaybackRequiresUserGesture(false);
+    // 文件互访更宽松（assets 兜底时更稳）
+    try {
+      s.setAllowFileAccess(true);
+      if (Build.VERSION.SDK_INT >= 16) s.setAllowFileAccessFromFileURLs(true);
+      if (Build.VERSION.SDK_INT >= 16) s.setAllowUniversalAccessFromFileURLs(true);
+      if (Build.VERSION.SDK_INT >= 21) s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+    } catch (Throwable ignore) {}
     Log.i(TAG, "WebSettings ready: JS=" + s.getJavaScriptEnabled()
         + ", DOMStorage=" + s.getDomStorageEnabled()
         + ", DB=" + s.getDatabaseEnabled());
 
-    // 关键：在 KitKat/KitKat Watch 强制软件渲染，避免 GPU 相关崩溃
+    // KitKat 软件渲染，>=21 硬件渲染
     if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.KITKAT_WATCH) {
       web.setLayerType(WebView.LAYER_TYPE_SOFTWARE, null);
       Log.i(TAG, "WebView layer=SOFTWARE (KitKat compatibility)");
@@ -121,6 +151,7 @@ public class MainActivity extends AppCompatActivity {
       @SuppressWarnings("deprecation")
       public boolean shouldOverrideUrlLoading(WebView view, String url) {
         Log.i(TAG, "shouldOverrideUrlLoading(deprecated): " + url);
+        setOverlay("Loading: " + url);
         return handleUrl(view, url);
       }
 
@@ -129,6 +160,7 @@ public class MainActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= 21) {
           String u = String.valueOf(request.getUrl());
           Log.i(TAG, "shouldOverrideUrlLoading: " + u);
+          setOverlay("Loading: " + u);
           return handleUrl(view, u);
         }
         return false;
@@ -139,49 +171,47 @@ public class MainActivity extends AppCompatActivity {
         Log.i(TAG, "onPageFinished: " + url);
         super.onPageFinished(view, url);
         injectJsHooks(view);
+        setOverlay("Loaded: " + url);
       }
 
       @Override
       @SuppressWarnings("deprecation")
       public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-        Log.e(TAG, "onReceivedError(deprecated): code=" + errorCode
-            + ", desc=" + description + ", url=" + failingUrl);
-        if (isLikelyMainDoc(failingUrl)) {
-          warnOrExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + description, null);
-        }
+        String msg = "onReceivedError: code=" + errorCode + ", desc=" + description + ", url=" + failingUrl;
+        Log.e(TAG, msg);
+        setOverlay(msg);
+        if (isLikelyMainDoc(failingUrl)) tryNextBaseOrAsset();
         super.onReceivedError(view, errorCode, description, failingUrl);
       }
 
       @Override
       public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
         if (Build.VERSION.SDK_INT >= 23) {
-          Log.e(TAG, "onReceivedError: code=" + error.getErrorCode()
-              + ", desc=" + error.getDescription()
-              + ", url=" + request.getUrl());
-          if (request.isForMainFrame()) {
-            warnOrExit(EC_INDEX_LOAD_ERROR, "Main page load failed: " + error.getDescription(), null);
-          }
-        } else {
-          Log.e(TAG, "onReceivedError(<23 shim)");
+          String msg = "onReceivedError: code=" + error.getErrorCode()
+              + ", desc=" + error.getDescription() + ", url=" + request.getUrl();
+          Log.e(TAG, msg);
+          setOverlay(String.valueOf(msg));
+          if (request.isForMainFrame()) tryNextBaseOrAsset();
         }
         super.onReceivedError(view, request, error);
       }
 
       @Override
       public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
-        Log.e(TAG, "onReceivedSslError: " + error);
+        String msg = "onReceivedSslError: " + error;
+        Log.e(TAG, msg);
+        setOverlay(msg);
         super.onReceivedSslError(view, handler, error);
       }
 
       @Override
       public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
-        if (Build.VERSION.SDK_INT >= 26) {
-          Log.e(TAG, "onRenderProcessGone: didCrash=" + detail.didCrash()
-              + ", rendererPriorityAtExit=" + detail.rendererPriorityAtExit());
-        } else {
-          Log.e(TAG, "onRenderProcessGone(<26 shim)");
-        }
-        warnOrExit(EC_RENDER_GONE, "WebView render process gone", null);
+        String msg = Build.VERSION.SDK_INT >= 26
+            ? "onRenderProcessGone: didCrash=" + detail.didCrash()
+            : "onRenderProcessGone(<26 shim)";
+        Log.e(TAG, msg);
+        setOverlay(msg);
+        warnOrExit(EC_RENDER_GONE, msg, null);
         return true;
       }
 
@@ -189,7 +219,7 @@ public class MainActivity extends AppCompatActivity {
         if (url == null || url.length() == 0) return true;
         try {
           if (url.startsWith("http://") || url.startsWith("https://")) {
-            Log.i(TAG, "navigate external http(s): " + url);
+            Log.i(TAG, "navigate http(s): " + url);
             v.loadUrl(url);
             return true;
           }
@@ -197,11 +227,12 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "ignore special: " + url);
             return true;
           }
-          String abs = BASE + url.replaceFirst("^/+", "");
+          String abs = BASE_127 + url.replaceFirst("^/+", "");
           Log.i(TAG, "navigate relative -> " + abs);
           v.loadUrl(abs);
           return true;
         } catch (Throwable t) {
+          setOverlay("handleUrl failed: " + url + " => " + t);
           warnOrExit(EC_INDEX_LOAD_ERROR, "handleUrl failed: " + url, t);
           return true;
         }
@@ -218,18 +249,48 @@ public class MainActivity extends AppCompatActivity {
           case WARNING:Log.w(TAG, line); break;
           default:     Log.i(TAG, line); break;
         }
+        setOverlay("Console: " + cm.messageLevel() + " " + cm.message());
         return super.onConsoleMessage(cm);
       }
     });
 
+    // 首次加载：优先 127.0.0.1，失败自动切 localhost，再失败切 assets
     if (serverStarted) {
-      String first = BASE + "index.html";
+      String first = BASE_127 + "index.html";
       Log.i(TAG, "web.loadUrl => " + first);
+      setOverlay("Loading first: " + first);
       web.loadUrl(first);
     } else {
       Log.w(TAG, "server not started, fallback to assets: " + ASSET_INDEX);
+      setOverlay("Server not started, use assets");
       web.loadUrl(ASSET_INDEX);
     }
+  }
+
+  private void setOverlay(final String text) {
+    if (overlay == null) return;
+    overlay.post(new Runnable() { @Override public void run() { overlay.setText(text); } });
+  }
+
+  private void tryNextBaseOrAsset() {
+    // 先尝试 localhost
+    if (serverStarted && !currentBaseIsHost()) {
+      String alt = BASE_HOST + "index.html";
+      Log.w(TAG, "fallback to localhost => " + alt);
+      setOverlay("Fallback: " + alt);
+      web.loadUrl(alt);
+      return;
+    }
+    // 再兜底 assets
+    Log.w(TAG, "fallback to assets => " + ASSET_INDEX);
+    setOverlay("Fallback assets: " + ASSET_INDEX);
+    web.loadUrl(ASSET_INDEX);
+  }
+
+  private boolean currentBaseIsHost() {
+    // 简单判断：若最近一次加载包含 BASE_HOST 则认为是 host
+    return overlay != null && overlay.getText() != null
+        && String.valueOf(overlay.getText()).contains(BASE_HOST);
   }
 
   private void startServerWithFallback() {
@@ -241,7 +302,7 @@ public class MainActivity extends AppCompatActivity {
           server.start();
           serverStarted = true;
           serverPort = port;
-          Log.i(TAG, "LocalHttpServer.start() ok @ 127.0.0.1:" + port);
+          Log.i(TAG, "LocalHttpServer.start() ok @ 0.0.0.0:" + port);
           return;
         } catch (Throwable t1) {
           Log.w(TAG, "server.start() failed on port " + port + ", retry timeout/daemon", t1);
@@ -285,6 +346,7 @@ public class MainActivity extends AppCompatActivity {
     String u = url.toLowerCase();
     return u.contains("index.html")
         || u.equals(("http://127.0.0.1:" + serverPort + "/").toLowerCase())
+        || u.equals(("http://localhost:" + serverPort + "/").toLowerCase())
         || u.equals(ASSET_INDEX.toLowerCase());
   }
 
@@ -321,20 +383,22 @@ public class MainActivity extends AppCompatActivity {
   private void warnOrExit(final int code, final String msg, final Throwable t) {
     CrashLogger.err("FATAL?[" + code + "]: " + msg, t);
     Log.e(TAG, "FATAL?[" + code + "]: " + msg, t);
+    setOverlay("Fatal? " + code + ": " + msg + (t != null ? ("\n" + t) : ""));
     try { Toast.makeText(this, "错误码: " + code + (EXIT_ON_FATAL ? "（将返回桌面）" : "（调试模式，不退出）"), Toast.LENGTH_LONG).show(); } catch (Throwable ignore) {}
     if (!EXIT_ON_FATAL) return;
     toHomeAndExit(code, 600);
   }
 
-  // 兜底：总是回桌面并退出（用于未捕获异常）
   private void fatalExit(final int code, final String msg, final Throwable t) {
     CrashLogger.err("FATAL[" + code + "]: " + msg, t);
     Log.e(TAG, "FATAL[" + code + "]: " + msg, t);
+    setOverlay("Fatal " + code + ": " + msg + (t != null ? ("\n" + t) : ""));
     try { Toast.makeText(this, "错误码: " + code + "（即将返回桌面）", Toast.LENGTH_LONG).show(); } catch (Throwable ignore) {}
     toHomeAndExit(code, 400);
   }
 
   private void toHomeAndExit(final int code, long delayMs) {
+    if (!EXIT_ON_FATAL) return;
     try {
       Intent home = new Intent(Intent.ACTION_MAIN);
       home.addCategory(Intent.CATEGORY_HOME);
