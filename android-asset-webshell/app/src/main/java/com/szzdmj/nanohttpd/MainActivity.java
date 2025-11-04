@@ -12,14 +12,18 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 
 // 注意：R 属于 app 的 namespace（build.gradle 配置为 com.szzdmj.nanohttpd.webshell）
 import com.szzdmj.nanohttpd.webshell.R;
 
-// 修复编译错误需要的 import
+// 需要该 import 才能使用 SOCKET_READ_TIMEOUT 常量
 import fi.iki.elonen.NanoHTTPD;
 
 import java.io.InputStream;
@@ -28,9 +32,11 @@ public class MainActivity extends AppCompatActivity {
 
   private static final String TAG = "WebShell/MainActivity";
   private static final String BASE = "http://127.0.0.1:12721/";
+  private static final String ASSET_INDEX = "file:///android_asset/index.html";
 
   private WebView web;
   private LocalHttpServer server;
+  private boolean serverStarted = false;
 
   @SuppressLint("SetJavaScriptEnabled")
   @Override protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -44,8 +50,9 @@ public class MainActivity extends AppCompatActivity {
         CrashLogger.err("FATAL crash in thread=" + t.getName(), e);
       }
     });
+    Log.i(TAG, "Crash log path = " + CrashLogger.getLogPath());
 
-    // 开启 WebView 远程调试（4.4+）
+    // 启用 WebView 远程调试（4.4+）
     try {
       if (Build.VERSION.SDK_INT >= 19) {
         WebView.setWebContentsDebuggingEnabled(true);
@@ -55,24 +62,40 @@ public class MainActivity extends AppCompatActivity {
       Log.w(TAG, "Enable debugging failed", t);
     }
 
-    // 启动本地 HTTP 服务器
-    try {
-      server = new LocalHttpServer(getApplicationContext(), 12721);
+    // 权限检测（INTERNET 为 normal 权限，安装即赋予；若清单未声明，这里会返回 DENIED）
+    boolean hasInternet = ContextCompat.checkSelfPermission(
+        this, Manifest.permission.INTERNET) == PackageManager.PERMISSION_GRANTED;
+    Log.i(TAG, "permission INTERNET granted=" + hasInternet);
+    if (!hasInternet) {
+      // 清单未声明时才会发生；直接提示并走本地 assets 兜底，避免“一闪即退”
+      Toast.makeText(this, "未声明网络权限：将改用本地页面", Toast.LENGTH_LONG).show();
+    }
+
+    // 尝试启动本地 HTTP 服务器（需要 INTERNET）
+    if (hasInternet) {
       try {
-        server.start();
-        Log.i(TAG, "LocalHttpServer.start() ok @ http://127.0.0.1:12721/");
-      } catch (Throwable t1) {
-        Log.w(TAG, "server.start() failed, retry with timeout/daemon", t1);
+        server = new LocalHttpServer(getApplicationContext(), 12721);
         try {
-          // 关键：这里需要 NanoHTTPD 常量，已添加 import
-          server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
-          Log.i(TAG, "LocalHttpServer.start(timeout,daemon) ok");
-        } catch (Throwable t2) {
-          CrashLogger.err("LocalHttpServer start() failed", t2);
+          server.start();
+          serverStarted = true;
+          Log.i(TAG, "LocalHttpServer.start() ok @ " + BASE);
+        } catch (Throwable t1) {
+          Log.w(TAG, "server.start() failed, retry with timeout/daemon", t1);
+          try {
+            server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
+            serverStarted = true;
+            Log.i(TAG, "LocalHttpServer.start(timeout,daemon) ok");
+          } catch (Throwable t2) {
+            serverStarted = false;
+            CrashLogger.err("LocalHttpServer start() failed", t2);
+            Toast.makeText(this, "本地服务器启动失败，改用本地页面", Toast.LENGTH_LONG).show();
+          }
         }
+      } catch (Throwable t) {
+        serverStarted = false;
+        CrashLogger.err("Create LocalHttpServer failed", t);
+        Toast.makeText(this, "创建本地服务器失败，改用本地页面", Toast.LENGTH_LONG).show();
       }
-    } catch (Throwable t) {
-      CrashLogger.err("Create LocalHttpServer failed", t);
     }
 
     // 核心资源自检：assets/index.html 与 id-shim.js
@@ -210,9 +233,15 @@ public class MainActivity extends AppCompatActivity {
       }
     });
 
-    String first = BASE + "index.html";
-    Log.i(TAG, "web.loadUrl => " + first);
-    web.loadUrl(first);
+    // 首次加载：优先本地服务器，否则直接从 assets 加载
+    if (serverStarted) {
+      String first = BASE + "index.html";
+      Log.i(TAG, "web.loadUrl => " + first);
+      web.loadUrl(first);
+    } else {
+      Log.w(TAG, "server not started, fallback to assets: " + ASSET_INDEX);
+      web.loadUrl(ASSET_INDEX);
+    }
   }
 
   private void injectJsHooks(WebView view) {
@@ -226,10 +255,6 @@ public class MainActivity extends AppCompatActivity {
           + "      try{console.error('JS-ERROR: '+m+' @ '+src+':'+ln+':'+(col||0));}catch(_){}"
           + "      if(typeof _e==='function'){try{_e.apply(this,arguments);}catch(_){}}"
           + "    };"
-          + "    var _log=console.log,_warn=console.warn,_err=console.error;"
-          + "    console.log   = function(){try{_log.apply(console,arguments);}catch(_){}};"
-          + "    console.warn  = function(){try{_warn.apply(console,arguments);}catch(_){}};"
-          + "    console.error = function(){try{_err.apply(console,arguments);}catch(_){}};"
           + "  }"
           + "}catch(e){console.error('INJECT-HOOK-FAIL:'+e);}})();";
       if (Build.VERSION.SDK_INT >= 19) view.evaluateJavascript(js, null);
@@ -263,7 +288,7 @@ public class MainActivity extends AppCompatActivity {
 
   @Override protected void onDestroy() {
     Log.i(TAG, "onDestroy()");
-    try { if (server != null) server.stop(); Log.i(TAG, "server.stop() ok"); }
+    try { if (serverStarted && server != null) { server.stop(); Log.i(TAG, "server.stop() ok"); } }
     catch (Throwable t) { CrashLogger.err("server.stop() failed", t); }
     super.onDestroy();
   }
